@@ -236,10 +236,17 @@ namespace LaserGRBL.Marking
 
         public static string GCode(List<MarkingOperation> operations, double offsetX, double offsetY, double retreatX, double retreatY)
         {
+            return GCode(operations, offsetX, offsetY, retreatX, retreatY, 1, 1);
+        }
+
+        public static string GCode(List<MarkingOperation> operations, double offsetX, double offsetY, double retreatX, double retreatY, double correctionX, double correctionY)
+        {
+            DimensionCalibration.ValidateFactor(correctionX); DimensionCalibration.ValidateFactor(correctionY);
             if (operations == null || operations.Count == 0) throw new ArgumentException("加工するオブジェクトがありません。");
             foreach (double v in new[] { offsetX, offsetY, retreatX, retreatY })
                 if (double.IsNaN(v) || double.IsInfinity(v)) throw new ArgumentException("座標が不正です。");
             StringBuilder code = new StringBuilder("(LaserGRBL Marking)\r\nM5 S0\r\nG21\r\nG90\r\nG94\r\n");
+            if (correctionX != 1 || correctionY != 1) code.Append("(Dimension correction X=").Append(N(correctionX)).Append(" Y=").Append(N(correctionY)).Append(")\r\n");
             foreach (MarkingOperation operation in operations)
             {
                 List<MarkingPath> paths = operation.Paths;
@@ -252,12 +259,12 @@ namespace LaserGRBL.Marking
                 {
                     if (path.Points.Count < 2) continue;
                     PointF first = path.Points[0];
-                    code.Append("M5 S0\r\nG0 X").Append(N(first.X + offsetX)).Append(" Y").Append(N(first.Y + offsetY)).Append("\r\n");
+                    code.Append("M5 S0\r\nG0 X").Append(N((first.X + offsetX) * correctionX)).Append(" Y").Append(N((first.Y + offsetY) * correctionY)).Append("\r\n");
                     code.Append(laserMode).Append(" S0\r\n");
                     for (int i = 1; i < path.Points.Count + (path.Closed ? 1 : 0); i++)
                     {
                         PointF p = path.Points[i % path.Points.Count];
-                        code.Append("G1 X").Append(N(p.X + offsetX)).Append(" Y").Append(N(p.Y + offsetY))
+                        code.Append("G1 X").Append(N((p.X + offsetX) * correctionX)).Append(" Y").Append(N((p.Y + offsetY) * correctionY))
                             .Append(" F").Append(N(speed)).Append(" S").Append(N(power)).Append("\r\n");
                     }
                     code.Append("M5 S0\r\n");
@@ -266,7 +273,7 @@ namespace LaserGRBL.Marking
             // Synchronize the planner before and after the laser-off retreat.
             code.Append("G4 P0\r\nM5 S0\r\n");
             if (retreatX != 0 || retreatY != 0)
-                code.Append("G91\r\nG0 X").Append(N(retreatX)).Append(" Y").Append(N(retreatY)).Append("\r\nG90\r\nG4 P0\r\n");
+                code.Append("G91\r\nG0 X").Append(N(retreatX * correctionX)).Append(" Y").Append(N(retreatY * correctionY)).Append("\r\nG90\r\nG4 P0\r\n");
             return code.ToString();
         }
 

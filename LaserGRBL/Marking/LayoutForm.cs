@@ -34,6 +34,7 @@ namespace LaserGRBL.Marking
             AddTool(tools, "QR", () => AddItem(LayoutKind.QR, "https://example.com"));
             AddTool(tools, "連番文字", () => AddItem(LayoutKind.Text, "{serial}")); AddTool(tools, "連番QR", () => AddItem(LayoutKind.QR, "{serial}"));
             tools.Items.Add(new ToolStripSeparator()); AddTool(tools, "全体表示", () => canvas.Fit());
+            AddTool(tools, "定規・寸法補正", () => { using (CalibrationForm form = new CalibrationForm(core)) form.ShowDialog(this); });
             AddTool(tools, "Gコード生成 →", Generate);
             SplitContainer split = new SplitContainer { Dock = DockStyle.Fill, FixedPanel = FixedPanel.Panel2 };
             split.Panel1.Controls.Add(canvas);

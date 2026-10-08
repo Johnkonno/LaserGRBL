@@ -63,10 +63,13 @@ namespace LaserGRBL.Marking
         private sealed class Generated
         {
             public string Code, Text;
+            public DimensionCalibration Calibration;
             public bool Serial;
             public List<MarkingPath> Paths;
             public double X, Y, RetreatX, RetreatY;
         }
+
+        internal DimensionCalibration GeneratedCalibration { get { return prepared == null ? null : prepared.Calibration; } }
 
         public MarkingForm(GrblCore core) : this(core, null) { }
 
@@ -264,6 +267,7 @@ namespace LaserGRBL.Marking
             BackgroundWorker worker = new BackgroundWorker();
             worker.DoWork += (s, args) =>
             {
+                generated.Calibration = DimensionCalibration.Open(DimensionCalibration.DefaultPath);
                 if (job != null)
                 {
                     List<MarkingOperation> operations = job.Operations(serialText);
@@ -275,7 +279,7 @@ namespace LaserGRBL.Marking
                             throw new ArgumentException("M4にはコントローラーのレーザーモードが必要です。");
                     }
                     generated.Paths = operations.SelectMany(o => o.Paths).ToList();
-                    generated.Code = MarkingGeometry.GCode(operations, generated.X, generated.Y, generated.RetreatX, generated.RetreatY);
+                    generated.Code = MarkingGeometry.GCode(operations, generated.X, generated.Y, generated.RetreatX, generated.RetreatY, generated.Calibration.X, generated.Calibration.Y);
                     args.Result = generated; return;
                 }
                 if (GrblCore.Configuration.MaxPWM > 0 && sPower > (double)GrblCore.Configuration.MaxPWM)
@@ -309,7 +313,7 @@ namespace LaserGRBL.Marking
                 }
                 else paths = MarkingGeometry.QrFill(content, size, step);
                 generated.Paths = paths;
-                generated.Code = MarkingGeometry.GCode(paths, feed, sPower, laserMode, generated.X, generated.Y, generated.RetreatX, generated.RetreatY);
+                generated.Code = MarkingGeometry.GCode(new List<MarkingOperation> { new MarkingOperation { Paths=paths, Speed=feed, Power=sPower, LaserMode=laserMode } }, generated.X, generated.Y, generated.RetreatX, generated.RetreatY, generated.Calibration.X, generated.Calibration.Y);
                 args.Result = generated;
             };
             worker.RunWorkerCompleted += (s, args) =>
@@ -325,7 +329,8 @@ namespace LaserGRBL.Marking
                     preview.Invalidate();
                     settings.AutoScrollPosition = Point.Empty;
                     status.Text = "生成済み：" + prepared.Paths.Count + "軌道" + (prepared.Serial ? " ／ " + prepared.Text : "") +
-                        "\r\n配置 X=" + generated.X + " Y=" + generated.Y + " mm。退避を含む範囲を確認してください。";
+                        "\r\n配置 X=" + generated.X + " Y=" + generated.Y + " mm。退避を含む範囲を確認してください。" +
+                        "\r\n寸法補正 X=" + prepared.Calibration.X.ToString("0.########") + " Y=" + prepared.Calibration.Y.ToString("0.########") + "（表示は設計寸法）";
                 }
                 RefreshButtons(); worker.Dispose();
             };

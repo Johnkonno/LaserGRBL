@@ -272,6 +272,81 @@ internal static class Program
                     core.Feed("<Idle|MPos:0,0,0>");Application.DoEvents();Assert(journal.Next==number+1,"Duplicate completion incremented");form.Close();
                 }
             });
+            Test("Dimension correction uses the generated ruler factor for repeat calibration", () =>
+            {
+                double first=DimensionCalibration.Calculate(1,100,98);Assert(Math.Abs(first-100.0/98)<1e-12,"Initial ratio wrong");
+                double second=DimensionCalibration.Calculate(first,100,99.9);Assert(Math.Abs(second-first*100/99.9)<1e-12,"Prior correction discarded");
+                Assert(Math.Abs(DimensionCalibration.Calculate(first,100,100)-first)<1e-12,"Already correct ruler changed the factor");
+                Throws<ArgumentException>(()=>DimensionCalibration.Calculate(1,100,0));Throws<ArgumentException>(()=>DimensionCalibration.Calculate(1,100,double.NaN));
+                Throws<ArgumentException>(()=>DimensionCalibration.Calculate(1,100,0.01));
+            });
+            Test("Calibration rulers have exact endpoints and preserve a noninteger final tick", () =>
+            {
+                var rulers=CalibrationRuler.Create(100.5,80,1,10,true,true,80);Assert(rulers.Items.Count==2,"Axis missing");
+                var x=rulers.Items[0].Geometry;Near(100.5,x[0].Points[1].X-x[0].Points[0].X);
+                var y=rulers.Items[1].Geometry;Near(80,y[0].Points[1].Y-y[0].Points[0].Y);
+                Assert(x.Any(p=>!p.Closed&&p.Points.Count==2&&Math.Abs(p.Points[0].X-100.5)<0.0001&&Math.Abs(p.Points[1].Y-4)<0.0001),"Final numbered tick missing");
+                Assert(CalibrationRuler.Create(100,100,1,10,false,true,80).Items.Count==1,"Unused X axis generated");
+                File.WriteAllText(Path.Combine(artifacts,"calibration-rulers.lgrbl-layout"),LayoutDocument.Serialize(rulers));
+                Throws<ArgumentException>(()=>CalibrationRuler.Create(1000,100,0.1,10,true,false,80));
+                Throws<ArgumentException>(()=>CalibrationRuler.Create(100,100,1,1.5,true,false,80));
+                Throws<ArgumentException>(()=>CalibrationRuler.Create(100,100,1,10,false,false,80));
+            });
+            Test("Calibration profile persists trial references and rejects stale writers", () =>
+            {
+                string path=Path.Combine(artifacts,"calibration-"+Guid.NewGuid()+".json");var first=DimensionCalibration.Open(path);var stale=DimensionCalibration.Open(path);
+                first.X=1.02;first.Y=0.99;first.Trial=new CalibrationTrial{LengthX=100,LengthY=80,UsedX=1,UsedY=1,AxisX=true,AxisY=true};first.Save();
+                var saved=DimensionCalibration.Open(path);Assert(Math.Abs(saved.X-1.02)<1e-12&&saved.Trial.LengthY==80&&saved.Trial.UsedX==1,"Profile/trial changed");
+                Throws<IOException>(()=>stale.Save());
+                string corrupt=Path.Combine(artifacts,"bad-calibration-"+Guid.NewGuid()+".json");File.WriteAllText(corrupt,"{\"X\":0,\"Y\":1}");Throws<ArgumentException>(()=>DimensionCalibration.Open(corrupt));
+            });
+            Test("Coordinate correction applies once to engraving, placement and laser-off retreat", () =>
+            {
+                var paths=Line();var operations=new List<MarkingOperation>{new MarkingOperation{Paths=paths,Speed=500,Power=80,LaserMode="M3"}};
+                string code=MarkingGeometry.GCode(operations,1,2,4,5,2,3);
+                Assert(code.Contains("G0 X2 Y6\r\n")&&code.Contains("G1 X22 Y6 F500 S80"),"Placement/engraving not corrected");
+                Assert(code.EndsWith("G91\r\nG0 X8 Y15\r\nG90\r\nG4 P0\r\n"),"Retreat not corrected");
+                Assert(code.Contains("G4 P0\r\nM5 S0\r\nG91"),"Laser left enabled for corrected retreat");Near(10,paths[0].Points[1].X);
+                Throws<ArgumentException>(()=>MarkingGeometry.GCode(operations,0,0,0,0,0,1));
+            });
+            Test("Marking dialog uses saved calibration while keeping design geometry unchanged", () =>
+            {
+                var profile=DimensionCalibration.Open(DimensionCalibration.DefaultPath);profile.X=2;profile.Y=3;profile.Save();
+                try
+                {
+                    var document=CalibrationRuler.Create(100,100,1,10,true,false,80);document.OriginX=4;document.OriginY=7;document.Retreat=true;document.RetreatX=2;document.RetreatY=5;
+                    string before=LayoutDocument.Serialize(document);
+                    using(var form=new MarkingForm(core,document))
+                    {
+                        form.Location=new Point(-2000,-2000);form.StartPosition=FormStartPosition.Manual;form.ShowInTaskbar=false;form.Show();Method(form,"Generate",null,EventArgs.Empty);
+                        var deadline=DateTime.UtcNow.AddSeconds(30);while((bool)Field(form,"busy")&&DateTime.UtcNow<deadline){Application.DoEvents();Thread.Sleep(10);}
+                        object prepared=Field(form,"prepared");Assert(prepared!=null,((Label)Field(form,"status")).Text);string code=(string)prepared.GetType().GetField("Code").GetValue(prepared);
+                        Assert(code.Contains("G0 X48 Y45"),"Saved correction missing from ruler origin");Assert(code.EndsWith("G91\r\nG0 X4 Y15\r\nG90\r\nG4 P0\r\n"),"Saved correction missing from retreat");
+                        Assert(form.GeneratedCalibration.X==2&&form.GeneratedCalibration.Y==3,"Generated factor snapshot missing");
+                        Assert(before==LayoutDocument.Serialize(document),"Design dimensions were modified");form.Close();
+                    }
+                }
+                finally {var restore=DimensionCalibration.Open(DimensionCalibration.DefaultPath);restore.X=restore.Y=1;restore.Trial=null;restore.Save();}
+            });
+            Test("Calibration dialog renders a ruler and saves a measured axis without double correction", () =>
+            {
+                var profile=DimensionCalibration.Open(DimensionCalibration.DefaultPath);profile.Trial=new CalibrationTrial{LengthX=100,LengthY=100,UsedX=1,UsedY=1,AxisX=true,AxisY=true};profile.Save();
+                try
+                {
+                    using(var form=new CalibrationForm(core))
+                    {
+                        form.Location=new Point(-2000,-2000);form.StartPosition=FormStartPosition.Manual;form.ShowInTaskbar=false;form.Show();
+                        ((NumericUpDown)Field(form,"actualX")).Value=98;((NumericUpDown)Field(form,"actualY")).Value=101;
+                        Application.DoEvents();Assert(((Button)Field(form,"apply")).Enabled,"Measured application unavailable");
+                        using(var bitmap=new Bitmap(form.Width,form.Height)){form.DrawToBitmap(bitmap,new Rectangle(Point.Empty,form.Size));bitmap.Save(Path.Combine(artifacts,"calibration-dialog.png"));}
+                        Method(form,"ApplyMeasurement");var saved=DimensionCalibration.Open(DimensionCalibration.DefaultPath);
+                        Assert(Math.Abs(saved.X-100.0/98)<1e-12&&Math.Abs(saved.Y-100.0/101)<1e-12,"Measurement ratio not saved");
+                        Assert(saved.Trial==null&&!((Button)Field(form,"apply")).Enabled,"Same trial can be reapplied");
+                        Method(form,"ApplyMeasurement");Assert(DimensionCalibration.Open(DimensionCalibration.DefaultPath).Revision==saved.Revision,"Repeated application changed the profile");form.Close();
+                    }
+                }
+                finally {var restore=DimensionCalibration.Open(DimensionCalibration.DefaultPath);restore.X=restore.Y=1;restore.Trial=null;restore.Save();}
+            });
             core.Exiting();
         }
         Console.WriteLine("RESULT: "+passed+" passed, "+failed+" failed");
