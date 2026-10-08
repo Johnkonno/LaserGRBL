@@ -24,6 +24,13 @@ namespace LaserGRBL.Marking
         }
     }
 
+    public sealed class MarkingOperation
+    {
+        public List<MarkingPath> Paths;
+        public double Speed, Power;
+        public string LaserMode;
+    }
+
     public static class MarkingGeometry
     {
         private const double Scale = 100000.0;
@@ -224,26 +231,37 @@ namespace LaserGRBL.Marking
         public static string GCode(List<MarkingPath> paths, double speed, double power, string laserMode,
             double offsetX, double offsetY, double retreatX, double retreatY)
         {
-            ValidatePaths(paths);
-            Positive(speed, "加工速度");
-            Positive(power, "出力");
-            if (laserMode != "M3" && laserMode != "M4") throw new ArgumentException("レーザーモードが不正です。");
+            return GCode(new List<MarkingOperation> { new MarkingOperation { Paths = paths, Speed = speed, Power = power, LaserMode = laserMode } }, offsetX, offsetY, retreatX, retreatY);
+        }
+
+        public static string GCode(List<MarkingOperation> operations, double offsetX, double offsetY, double retreatX, double retreatY)
+        {
+            if (operations == null || operations.Count == 0) throw new ArgumentException("加工するオブジェクトがありません。");
             foreach (double v in new[] { offsetX, offsetY, retreatX, retreatY })
                 if (double.IsNaN(v) || double.IsInfinity(v)) throw new ArgumentException("座標が不正です。");
             StringBuilder code = new StringBuilder("(LaserGRBL Marking)\r\nM5 S0\r\nG21\r\nG90\r\nG94\r\n");
-            foreach (MarkingPath path in paths)
+            foreach (MarkingOperation operation in operations)
             {
-                if (path.Points.Count < 2) continue;
-                PointF first = path.Points[0];
-                code.Append("M5 S0\r\nG0 X").Append(N(first.X + offsetX)).Append(" Y").Append(N(first.Y + offsetY)).Append("\r\n");
-                code.Append(laserMode).Append(" S0\r\n");
-                for (int i = 1; i < path.Points.Count + (path.Closed ? 1 : 0); i++)
+                List<MarkingPath> paths = operation.Paths;
+                double speed = operation.Speed, power = operation.Power;
+                string laserMode = operation.LaserMode;
+                ValidatePaths(paths);
+                Positive(speed, "加工速度"); Positive(power, "出力");
+                if (laserMode != "M3" && laserMode != "M4") throw new ArgumentException("レーザーモードが不正です。");
+                foreach (MarkingPath path in paths)
                 {
-                    PointF p = path.Points[i % path.Points.Count];
-                    code.Append("G1 X").Append(N(p.X + offsetX)).Append(" Y").Append(N(p.Y + offsetY))
-                        .Append(" F").Append(N(speed)).Append(" S").Append(N(power)).Append("\r\n");
+                    if (path.Points.Count < 2) continue;
+                    PointF first = path.Points[0];
+                    code.Append("M5 S0\r\nG0 X").Append(N(first.X + offsetX)).Append(" Y").Append(N(first.Y + offsetY)).Append("\r\n");
+                    code.Append(laserMode).Append(" S0\r\n");
+                    for (int i = 1; i < path.Points.Count + (path.Closed ? 1 : 0); i++)
+                    {
+                        PointF p = path.Points[i % path.Points.Count];
+                        code.Append("G1 X").Append(N(p.X + offsetX)).Append(" Y").Append(N(p.Y + offsetY))
+                            .Append(" F").Append(N(speed)).Append(" S").Append(N(power)).Append("\r\n");
+                    }
+                    code.Append("M5 S0\r\n");
                 }
-                code.Append("M5 S0\r\n");
             }
             // Synchronize the planner before and after the laser-off retreat.
             code.Append("G4 P0\r\nM5 S0\r\n");

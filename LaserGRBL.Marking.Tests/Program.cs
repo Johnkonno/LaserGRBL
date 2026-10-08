@@ -181,6 +181,97 @@ internal static class Program
                     form.Close();
                 }
             });
+            Test("Layout scales, rotates, and translates SVG geometry in millimeters", () =>
+            {
+                string svg=Path.Combine(artifacts,"layout-shape.svg");
+                File.WriteAllText(svg,"<svg xmlns='http://www.w3.org/2000/svg' width='20mm' height='10mm' viewBox='0 0 20 10'><path d='M0 0 L10 0 L10 5 L0 5 Z'/></svg>");
+                var item=LayoutItem.ImportSvg(svg,core); item.Scale=2; item.Rotation=90; item.X=30; item.Y=40;
+                var b=item.Bounds("000001"); Near(20,b.Left); Near(30,b.Right); Near(40,b.Top); Near(60,b.Bottom);
+                var document=new LayoutDocument { Items=new List<LayoutItem>{item}, OriginX=7,OriginY=8,Retreat=true,RetreatX=3,RetreatY=4 };
+                File.Delete(svg);
+                var restored=LayoutDocument.Deserialize(LayoutDocument.Serialize(document));
+                Near(20,restored.Items[0].Bounds("000001").Left); Near(7,restored.OriginX); Near(4,restored.RetreatY);
+                Assert(restored.Operations("000001")[0].Paths.Count==1,"Embedded SVG did not survive without the original file");
+                File.WriteAllText(Path.Combine(artifacts,"sample.lgrbl-layout"),LayoutDocument.Serialize(document));
+            });
+            Test("Layout preserves per-object feed and power, order, and a single final retreat", () =>
+            {
+                var a=new LayoutItem {Kind=LayoutKind.Text,Content="A",Mode=LayoutMode.Trace,Speed=700,Power=80};
+                var b=new LayoutItem {Kind=LayoutKind.Text,Content="B",X=30,Mode=LayoutMode.Trace,Speed=900,Power=100};
+                var document=new LayoutDocument {Items=new List<LayoutItem>{a,b}};
+                var operations=document.Operations("000001");
+                string code=MarkingGeometry.GCode(operations,2,3,4,5);
+                Assert(code.IndexOf("F700 S80")<code.IndexOf("F900 S100"),"Machining order/settings lost");
+                Assert(code.Split(new[]{"G91"},StringSplitOptions.None).Length==2,"Retreat repeated per object");
+                Assert(code.EndsWith("G91\r\nG0 X4 Y5\r\nG90\r\nG4 P0\r\n"),"Final retreat missing");
+            });
+            Test("Serial bindings share one value and disabled objects do not participate", () =>
+            {
+                var text=new LayoutItem {Kind=LayoutKind.Text,Content="ID:{serial}",Mode=LayoutMode.Fill};
+                var qr=new LayoutItem {Kind=LayoutKind.QR,Content="ID:{serial}",Size=15,Mode=LayoutMode.Fill,X=40};
+                var document=new LayoutDocument {Items=new List<LayoutItem>{text,qr}};
+                Assert(document.UsesSerial && document.Operations("SN-000123").Count==2,"Bindings missing");
+                Near(text.Bounds("SN-000123").Width, new LayoutItem {Kind=LayoutKind.Text,Content="ID:SN-000123"}.Bounds("").Width);
+                Assert(qr.Outlines("SN-000123").Count==new LayoutItem {Kind=LayoutKind.QR,Content="ID:SN-000123",Size=15}.Outlines("").Count,"QR binding mismatch");
+                text.Enabled=qr.Enabled=false; Assert(!document.UsesSerial,"Disabled binding used"); Throws<ArgumentException>(()=>document.Operations("000001"));
+            });
+            Test("Layout rejects unsupported versions, nonfinite positions, and empty fill", () =>
+            {
+                Throws<ArgumentException>(()=>LayoutDocument.Deserialize("{\"Version\":2,\"Items\":[]}"));
+                var item=new LayoutItem {Kind=LayoutKind.Text,X=double.NaN}; Throws<ArgumentException>(()=>item.Validate());
+                item.X=0; item.Size=0; Throws<ArgumentException>(()=>item.Validate());
+                var open=new LayoutItem {Kind=LayoutKind.SVG,Mode=LayoutMode.Fill,Geometry=new List<LayoutPath>{new LayoutPath{Points=new List<LayoutPoint>{new LayoutPoint{X=0,Y=0},new LayoutPoint{X=10,Y=0}}}}};
+                Throws<ArgumentException>(()=>open.Operation("000001"));
+            });
+            Test("Layout canvas renders, drags objects, and restores edits with undo", () =>
+            {
+                var document=new LayoutDocument {Items=new List<LayoutItem>{
+                    new LayoutItem{Kind=LayoutKind.Text,Name="品番",Content="PART-A",Mode=LayoutMode.Fill,Y=20},
+                    new LayoutItem{Kind=LayoutKind.Text,Name="連番",Content="{serial}",Mode=LayoutMode.Fill},
+                    new LayoutItem{Kind=LayoutKind.QR,Name="連番QR",Content="{serial}",Size=15,X=30,Mode=LayoutMode.Fill}}};
+                document.Retreat=true; document.RetreatY=5;
+                File.WriteAllText(Path.Combine(artifacts,"serial-template.lgrbl-layout"),LayoutDocument.Serialize(document));
+                using(var form=new LayoutForm(core))
+                {
+                    typeof(LayoutForm).GetField("document",BindingFlags.Instance|BindingFlags.NonPublic).SetValue(form,document);
+                    typeof(LayoutForm).GetField("saved",BindingFlags.Instance|BindingFlags.NonPublic).SetValue(form,LayoutDocument.Serialize(document));
+                    Method(form,"RefreshScene",0);
+                    form.Location=new Point(-2000,-2000);form.StartPosition=FormStartPosition.Manual;form.ShowInTaskbar=false;form.Show();Application.DoEvents();
+                    var canvas=(LayoutCanvas)Field(form,"canvas");canvas.Fit();
+                    using(var bitmap=new Bitmap(form.Width,form.Height)){form.DrawToBitmap(bitmap,new Rectangle(Point.Empty,form.Size));bitmap.Save(Path.Combine(artifacts,"layout-editor.png"));}
+                    var bounds=document.Items[0].Bounds(canvas.Serial);
+                    var point=(PointF)canvas.GetType().GetMethod("Map",BindingFlags.Instance|BindingFlags.NonPublic).Invoke(canvas,new object[]{new PointF(bounds.Left+bounds.Width/2,bounds.Top+bounds.Height/2)});
+                    float zoom=(float)Field(canvas,"zoom"); int x=(int)point.X,y=(int)point.Y;
+                    Method(canvas,"OnMouseDown",new MouseEventArgs(MouseButtons.Left,1,x,y,0));
+                    Method(canvas,"OnMouseMove",new MouseEventArgs(MouseButtons.Left,0,x+20,y-10,0));
+                    Method(canvas,"OnMouseUp",new MouseEventArgs(MouseButtons.Left,1,x+20,y-10,0));
+                    Near(20/zoom,document.Items[0].X); Near(20+10/zoom,document.Items[0].Y);
+                    Method(form,"Undo",false); var restored=(LayoutDocument)Field(form,"document"); Near(0,restored.Items[0].X);Near(20,restored.Items[0].Y);
+                    form.Close();
+                }
+            });
+            Test("Whole-layout generation retains saved retreat and advances serial once", () =>
+            {
+                var document=new LayoutDocument {Items=new List<LayoutItem>{
+                    new LayoutItem{Kind=LayoutKind.Text,Content="{serial}",Mode=LayoutMode.Fill,Power=80},
+                    new LayoutItem{Kind=LayoutKind.QR,Content="{serial}",Size=15,X=30,Mode=LayoutMode.Fill,Power=80}},OriginX=4,OriginY=7,Retreat=true,RetreatX=3,RetreatY=5};
+                using(var form=new MarkingForm(core,document))
+                {
+                    Near(7,(double)((NumericUpDown)Field(form,"originY")).Value); Near(5,(double)((NumericUpDown)Field(form,"retreatY")).Value);
+                    Assert(((CheckBox)Field(form,"retreat")).Checked,"Saved retreat disabled");
+                    form.Location=new Point(-2000,-2000);form.StartPosition=FormStartPosition.Manual;form.ShowInTaskbar=false;form.Show();
+                    Method(form,"Generate",null,EventArgs.Empty);var deadline=DateTime.UtcNow.AddSeconds(30);
+                    while((bool)Field(form,"busy")&&DateTime.UtcNow<deadline){Application.DoEvents();Thread.Sleep(10);}
+                    object prepared=Field(form,"prepared");Assert(prepared!=null,((Label)Field(form,"status")).Text);
+                    Assert((bool)prepared.GetType().GetField("Serial").GetValue(prepared),"Layout serial flag missing");
+                    string code=(string)prepared.GetType().GetField("Code").GetValue(prepared);Assert(code.EndsWith("G91\r\nG0 X3 Y5\r\nG90\r\nG4 P0\r\n"),"Saved retreat lost");
+                    File.WriteAllText(Path.Combine(artifacts,"layout-generated.nc"),code);
+                    using(var bitmap=new Bitmap(form.Width,form.Height)){form.DrawToBitmap(bitmap,new Rectangle(Point.Empty,form.Size));bitmap.Save(Path.Combine(artifacts,"layout-generated.png"));}
+                    var journal=(SerialJournal)Field(form,"journal");long number=journal.Next;journal.Begin();typeof(MarkingForm).GetField("running",BindingFlags.Instance|BindingFlags.NonPublic).SetValue(form,true);
+                    core.Arm();core.Feed("<Idle|MPos:0,0,0>");Application.DoEvents();Assert(journal.Next==number+1&&!journal.Pending,"Whole layout incremented incorrectly");
+                    core.Feed("<Idle|MPos:0,0,0>");Application.DoEvents();Assert(journal.Next==number+1,"Duplicate completion incremented");form.Close();
+                }
+            });
             core.Exiting();
         }
         Console.WriteLine("RESULT: "+passed+" passed, "+failed+" failed");

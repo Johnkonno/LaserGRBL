@@ -38,17 +38,27 @@ namespace LaserGRBL
 			ColorScheme.CurrentScheme = Settings.GetObject("Color Schema", Scheme.CADDark);
 
 			InitializeComponent();
-			ToolStripMenuItem markingMenu = new ToolStripMenuItem("マーキング（SVG・連番・QR）...");
+			ToolStripMenuItem markingMenu = new ToolStripMenuItem("マーキング・レイアウト...");
 			markingMenu.Click += (sender, e) =>
 			{
 				if (Core.CanLoadNewFile)
 				{
-					try { using (Marking.MarkingForm form = new Marking.MarkingForm(Core)) form.ShowDialog(this); }
+					try { using (Marking.LayoutForm form = new Marking.LayoutForm(Core)) form.ShowDialog(this); }
 					catch (Exception ex) { MessageBox.Show(this, ex.Message, "マーキング", MessageBoxButtons.OK, MessageBoxIcon.Error); }
 				}
 			};
 			MnGenerate.DropDownItems.Add(new ToolStripSeparator());
 			MnGenerate.DropDownItems.Add(markingMenu);
+            ToolStripMenuItem quickMarking = new ToolStripMenuItem("単品マーキング（従来画面）...");
+            quickMarking.Click += (sender, e) =>
+            {
+                if (Core.CanLoadNewFile)
+                {
+                    try { using (Marking.MarkingForm form = new Marking.MarkingForm(Core)) form.ShowDialog(this); }
+                    catch (Exception ex) { MessageBox.Show(this, ex.Message, "マーキング", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+                }
+            };
+            MnGenerate.DropDownItems.Add(quickMarking);
 			ExceptionManager.ParentMain = this;
 
 			mLineWidthMenu = new List<ToolStripMenuItem>()

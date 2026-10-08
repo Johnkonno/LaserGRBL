@@ -117,6 +117,8 @@
     <Compile Include="Marking\MarkingGeometry.cs" />
     <Compile Include="Marking\SerialJournal.cs" />
     <Compile Include="Marking\MarkingForm.cs" />
+    <Compile Include="Marking\LayoutDocument.cs" />
+    <Compile Include="Marking\LayoutForm.cs" />
     <Compile Include="Autotrace\AutotraceTest.Designer.cs">
       <DependentUpon>AutotraceTest.cs</DependentUpon>
     </Compile>

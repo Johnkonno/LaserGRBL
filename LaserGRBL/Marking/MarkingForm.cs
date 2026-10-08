@@ -15,6 +15,7 @@ namespace LaserGRBL.Marking
     internal sealed class MarkingForm : Form
     {
         private readonly GrblCore core;
+        private readonly LayoutDocument layout;
         private readonly SerialJournal journal;
         private readonly ComboBox source = Choice("SVG", "連番", "QRコード");
         private readonly ComboBox mode = Choice("元のパス", "インセット／オフセット重ね", "パス沿いジグザグ");
@@ -56,7 +57,7 @@ namespace LaserGRBL.Marking
         private readonly List<Control> serialControls = new List<Control>();
         private readonly List<Control> qrControls = new List<Control>();
         private Generated prepared;
-        private bool busy, running, started, serialLoaded, disposing, serialFault;
+        private bool busy, running, started, serialLoaded, disposing, serialFault, loadingLayout;
         private string loadedSerialCode;
 
         private sealed class Generated
@@ -67,9 +68,12 @@ namespace LaserGRBL.Marking
             public double X, Y, RetreatX, RetreatY;
         }
 
-        public MarkingForm(GrblCore core)
+        public MarkingForm(GrblCore core) : this(core, null) { }
+
+        public MarkingForm(GrblCore core, LayoutDocument layout)
         {
             this.core = core;
+            this.layout = layout;
             journal = SerialJournal.Open(Path.Combine(GrblCore.DataPath, "serial-number.json"));
             Text = "LaserGRBL Marking — SVG・連番・QR";
             Size = new Size(980, 760);
@@ -159,6 +163,16 @@ namespace LaserGRBL.Marking
             timer.Tick += (s, e) => RefreshButtons();
             timer.Start();
             FormClosing += Closing;
+            if (layout != null)
+            {
+                loadingLayout = true;
+                Text = "LaserGRBL Marking — 全体のGコード生成・確認";
+                originX.Value = (decimal)layout.OriginX; originY.Value = (decimal)layout.OriginY;
+                retreatX.Value = (decimal)layout.RetreatX; retreatY.Value = (decimal)layout.RetreatY; retreat.Checked = layout.Retreat;
+                source.SelectedIndex = layout.UsesSerial ? 1 : 0;
+                generate.Text = "全体のGコードを生成";
+                loadingLayout = false;
+            }
             UpdateSource();
         }
 
@@ -184,6 +198,11 @@ namespace LaserGRBL.Marking
         }
         private void Changed(object sender, EventArgs e)
         {
+            if (layout != null && !loadingLayout)
+            {
+                layout.OriginX = (double)originX.Value; layout.OriginY = (double)originY.Value;
+                layout.RetreatX = (double)retreatX.Value; layout.RetreatY = (double)retreatY.Value; layout.Retreat = retreat.Checked;
+            }
             prepared = null;
             preview.Paths = null;
             preview.Invalidate();
@@ -195,6 +214,12 @@ namespace LaserGRBL.Marking
             foreach (Control c in svgControls) c.Visible = source.SelectedIndex == 0;
             foreach (Control c in serialControls) c.Visible = source.SelectedIndex == 1;
             foreach (Control c in qrControls) c.Visible = source.SelectedIndex == 2;
+            if (layout != null)
+            {
+                foreach (Control row in settings.Controls) row.Visible = false;
+                foreach (Control c in new Control[] { originX, originY, retreat, retreatX, retreatY }) c.Parent.Visible = true;
+                if (layout.UsesSerial) foreach (Control c in new Control[] { prefix, next, increment, digits, suffix, serialDisplay }) c.Parent.Visible = true;
+            }
             Changed(this, EventArgs.Empty);
             settings.AutoScrollPosition = Point.Empty;
         }
@@ -219,6 +244,7 @@ namespace LaserGRBL.Marking
 
         private void Generate(object sender, EventArgs e)
         {
+            LayoutDocument job = layout == null ? null : LayoutDocument.Deserialize(LayoutDocument.Serialize(layout));
             int kind = source.SelectedIndex;
             string filename = svgFile.Text, content = qrContent.Text, family = font.Text;
             string serialText = prefix.Text + ((long)next.Value).ToString("D" + (int)digits.Value) + suffix.Text;
@@ -238,6 +264,20 @@ namespace LaserGRBL.Marking
             BackgroundWorker worker = new BackgroundWorker();
             worker.DoWork += (s, args) =>
             {
+                if (job != null)
+                {
+                    List<MarkingOperation> operations = job.Operations(serialText);
+                    foreach (MarkingOperation operation in operations)
+                    {
+                        if (GrblCore.Configuration.MaxPWM > 0 && operation.Power > (double)GrblCore.Configuration.MaxPWM)
+                            throw new ArgumentException("オブジェクトの出力Sが機械設定の最大PWMを超えています。");
+                        if (operation.LaserMode == "M4" && core.IsConnected && !GrblCore.Configuration.LaserMode)
+                            throw new ArgumentException("M4にはコントローラーのレーザーモードが必要です。");
+                    }
+                    generated.Paths = operations.SelectMany(o => o.Paths).ToList();
+                    generated.Code = MarkingGeometry.GCode(operations, generated.X, generated.Y, generated.RetreatX, generated.RetreatY);
+                    args.Result = generated; return;
+                }
                 if (GrblCore.Configuration.MaxPWM > 0 && sPower > (double)GrblCore.Configuration.MaxPWM)
                     throw new ArgumentException("出力Sが機械設定の最大PWMを超えています。");
                 if (laserMode == "M4" && core.IsConnected && !GrblCore.Configuration.LaserMode)
