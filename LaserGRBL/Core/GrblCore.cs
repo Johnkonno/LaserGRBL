@@ -262,6 +262,10 @@ namespace LaserGRBL
 		public delegate void dlgJogStateChange(bool jog);
 
 		public event dlgIssueDetector IssueDetected;
+		internal event Action ProgramStarted;
+		internal event Action PhysicalJobCompleted;
+		internal event Action PhysicalJobFailed;
+		private bool awaitingPhysicalCompletion;
 		public event dlgOnMachineStatus MachineStatusChanged;
 		public event GrblFile.OnFileLoadedDlg OnFileLoading;
 		public event GrblFile.OnFileLoadedDlg OnFileLoaded;
@@ -496,6 +500,11 @@ namespace LaserGRBL
 				{
 					MacStatus oldStatus = mMachineStatus;
 					mMachineStatus = newStatus;
+					if (awaitingPhysicalCompletion && (newStatus == MacStatus.Alarm || newStatus == MacStatus.Disconnected || newStatus == MacStatus.Connecting))
+					{
+						awaitingPhysicalCompletion = false;
+						PhysicalJobFailed?.Invoke();
+					}
 
 					Logger.LogMessage("SetStatus", "Machine status [{0}]", mMachineStatus);
 					if (oldStatus == MacStatus.Connecting && newStatus == MacStatus.Disconnected)
@@ -567,6 +576,8 @@ namespace LaserGRBL
 
 		protected void SetIssue(DetectedIssue issue)
 		{
+			awaitingPhysicalCompletion = false;
+			PhysicalJobFailed?.Invoke();
 			mTP.JobIssue(issue);
 			Logger.LogMessage("Issue detector", "{0} [{1},{2},{3}]", issue, FreeBuffer, GrblBuffer, GrblBlock);
 
@@ -624,6 +635,7 @@ namespace LaserGRBL
 
 		void RiseOnFileLoading(long elapsed, string filename)
 		{
+			awaitingPhysicalCompletion = false;
 			mTP.Reset(true);
 
 			if (OnFileLoaded != null)
@@ -1351,6 +1363,7 @@ namespace LaserGRBL
 
 		private void RunProgramFromStart(bool homing, bool first = false, bool pass = false)
 		{
+			awaitingPhysicalCompletion = false;
 			//solo se non siamo tra le passate
 			if (!pass && !SafetyCountdown.CanGo())
 				return;
@@ -1379,6 +1392,7 @@ namespace LaserGRBL
 					mQueuePtr.Enqueue(cmd.Clone() as GrblCommand);
 
 				mTP.JobStart(LoadedFile, mQueuePtr, first);
+				if (first) ProgramStarted?.Invoke();
 				Logger.LogMessage("EnqueueProgram", "Running program, {0} lines", file.Count);
 			}
 		}
@@ -1391,12 +1405,14 @@ namespace LaserGRBL
 
 		protected virtual void OnJobBegin()
 		{
+			if (LoadedFile.IsMarkingProgram) return;
 			Logger.LogMessage("EnqueueProgram", "Push Header");
 			ExecuteCustomCode(Settings.GetObject("GCode.CustomHeader", GrblCore.GCODE_STD_HEADER));
 		}
 
 		protected virtual void OnJobEnd()
 		{
+			if (LoadedFile.IsMarkingProgram) return;
 			Logger.LogMessage("EnqueueProgram", "Push Footer");
 			ExecuteCustomCode(Settings.GetObject("GCode.CustomFooter", GrblCore.GCODE_STD_FOOTER));
 		}
@@ -2581,6 +2597,7 @@ namespace LaserGRBL
 
 		private void ManageRealTimeStatus(string rline)
 		{
+			bool parsed = false;
 			try
 			{
 				debugLastStatusDelay.Start();
@@ -2624,11 +2641,19 @@ namespace LaserGRBL
 					if (arr.Length > 6)
 						ComputeWCO(new GPoint(float.Parse(arr[4].Substring(5, arr[4].Length - 5), System.Globalization.NumberFormatInfo.InvariantInfo), float.Parse(arr[5], System.Globalization.NumberFormatInfo.InvariantInfo), float.Parse(arr[6], System.Globalization.NumberFormatInfo.InvariantInfo)));
 				}
+				parsed = true;
 			}
 			catch (Exception ex)
 			{
 				Logger.LogMessage("RealTimeStatus", "Ex on [{0}] message", rline);
 				Logger.LogException("RealTimeStatus", ex);
+			}
+			// An actual status report after all ACKs is required; a cached Idle state is insufficient.
+			if (parsed && awaitingPhysicalCompletion && mMachineStatus == MacStatus.Idle && !InProgram &&
+				mQueuePtr.Count == 0 && !HasPendingCommands())
+			{
+				awaitingPhysicalCompletion = false;
+				PhysicalJobCompleted?.Invoke();
 			}
 		}
 
@@ -2763,6 +2788,11 @@ namespace LaserGRBL
 				{
 					GrblCommand pending = mPending.Peek();  //necessario fare peek
 					pending.SetResult(rline, SupportCSV);   //assegnare lo stato
+					if (pending.Status == GrblCommand.CommandStatus.ResponseBad && awaitingPhysicalCompletion)
+					{
+						awaitingPhysicalCompletion = false;
+						PhysicalJobFailed?.Invoke();
+					}
 					mPending.Dequeue();                     //solo alla fine rimuoverlo dalla lista (per write config che si aspetta che lo stato sia noto non appena la coda si svuota)
 
 					mUsedBuffer = Math.Max(0, mUsedBuffer - pending.SerialData.Length);
@@ -2976,6 +3006,8 @@ namespace LaserGRBL
 				mSentPtr.Add(new GrblMessage(string.Format("[{0} lines, {1} errors, {2}]", file.Count, mTP.ErrorCount, Tools.Utils.TimeSpanToString(ProgramTime, Tools.Utils.TimePrecision.Second, Tools.Utils.TimePrecision.Second, ",", true)), GrblMessage.MessageType.Diagnostic));
                 OnProgramEnded?.Invoke();
                 OnJobEnd();
+				awaitingPhysicalCompletion = mTP.ErrorCount == 0 && mTP.LastIssue == DetectedIssue.Unknown && mMachineStatus != MacStatus.Check;
+				if (!awaitingPhysicalCompletion) PhysicalJobFailed?.Invoke();
 
 				SoundEvent.PlaySound(SoundEvent.EventId.Success);
 
@@ -3127,7 +3159,7 @@ namespace LaserGRBL
 			{
 				if (mDataPath == null)
 				{
-					mDataPath = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "LaserGRBL");
+					mDataPath = Environment.GetEnvironmentVariable("LASERGRBL_MARKING_DATA_PATH") ?? System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "LaserGRBL-Marking");
 					if (!System.IO.Directory.Exists(mDataPath))
 						System.IO.Directory.CreateDirectory(mDataPath);
 				}

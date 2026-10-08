@@ -46,8 +46,10 @@ namespace LaserGRBL
 			mRange.UpdateXYRange(new GrblCommand.Element('X', x1), new GrblCommand.Element('Y', y1), false);
         }
 
+        internal bool IsMarkingProgram { get; private set; }
         private void ClearList()
         {
+            IsMarkingProgram = false;
             foreach (GrblCommand command in list)
             {
                 command.Dispose();
@@ -61,10 +63,11 @@ namespace LaserGRBL
 			{
 				using (System.IO.StreamWriter sw = new System.IO.StreamWriter(filename))
 				{
-					if (useLFLineEndings)
+					if (IsMarkingProgram) sw.WriteLine("(LaserGRBL Marking)");
+                    if (useLFLineEndings)
 						sw.NewLine = "\n";
 
-					if (header)
+					if (header && !IsMarkingProgram)
 						EvaluateAddLines(core, sw, Settings.GetObject("GCode.CustomHeader", GrblCore.GCODE_STD_HEADER));
 
 					for (int i = 0; i < cycles; i++)
@@ -73,11 +76,11 @@ namespace LaserGRBL
 							sw.WriteLine(cmd.Command);
 
 
-						if (between && i < cycles - 1)
+						if (between && i < cycles - 1 && !IsMarkingProgram)
 							EvaluateAddLines(core, sw, Settings.GetObject("GCode.CustomPasses", GrblCore.GCODE_STD_PASSES));
 					}
 
-					if (footer)
+					if (footer && !IsMarkingProgram)
 						EvaluateAddLines(core, sw, Settings.GetObject("GCode.CustomFooter", GrblCore.GCODE_STD_FOOTER));
 
 					sw.Close();
@@ -142,6 +145,7 @@ namespace LaserGRBL
 							if ((line = line.Trim()).Length > 0)
 							{
 								GrblCommand cmd = new GrblCommand(line);
+								if (line == "(LaserGRBL Marking)") IsMarkingProgram = true;
 								if (!cmd.IsEmpty)
 									list.Add(cmd);
 							}
@@ -152,6 +156,21 @@ namespace LaserGRBL
 
 				RiseOnFileLoaded(filename, elapsed);
             });
+		}
+
+		internal void LoadMarkingCode(string code)
+		{
+			if (CheckInUse()) throw new InvalidOperationException("加工データを使用中です。");
+			RiseOnFileLoading("Marking");
+			ClearList();
+			IsMarkingProgram = code.Length > 0;
+			foreach (string line in code.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+			{
+				GrblCommand command = new GrblCommand(line);
+				if (!command.IsEmpty) list.Add(command);
+			}
+			Analyze();
+			RiseOnFileLoaded("Marking", 0);
 		}
 
 		public void LoadImportedSVG(string filename, bool append, GrblCore core, ColorFilter filter)

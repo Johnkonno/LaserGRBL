@@ -1,0 +1,21 @@
+<Project ToolsVersion="4.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <Configuration Condition="'$(Configuration)' == ''">Debug</Configuration>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>LaserGRBL.Marking.Tests</AssemblyName>
+    <TargetFrameworkVersion>v4.0</TargetFrameworkVersion>
+    <OutputPath>bin\$(Configuration)\</OutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="WindowsBase" />
+    <Reference Include="System.Runtime.Serialization" />
+    <Reference Include="QRCoder"><HintPath>..\packages\QRCoder.1.4.3\lib\net40\QRCoder.dll</HintPath></Reference>
+    <ProjectReference Include="..\LaserGRBL\LaserGRBL.csproj"><Project>{839698EC-FE05-4112-ACCB-A5D7556714F0}</Project><Name>LaserGRBL</Name></ProjectReference>
+    <Compile Include="Program.cs" />
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

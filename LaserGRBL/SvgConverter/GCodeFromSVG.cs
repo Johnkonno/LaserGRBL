@@ -34,6 +34,26 @@ namespace LaserGRBL.SvgConverter
 	}
 	class GCodeFromSVG
 	{
+		internal bool CaptureGeometry;
+		internal readonly List<Marking.MarkingPath> Geometry = new List<Marking.MarkingPath>();
+		private List<PointF> capturedPath;
+		private void CapturePoint(double x, double y)
+		{
+			if (!CaptureGeometry) return;
+			if (capturedPath == null) capturedPath = new List<PointF>();
+			PointF point = new PointF((float)x, (float)y);
+			if (capturedPath.Count == 0 || capturedPath[capturedPath.Count - 1] != point) capturedPath.Add(point);
+		}
+		private void FinishCapture()
+		{
+			if (capturedPath != null && capturedPath.Count > 1)
+			{
+				bool closed = Math.Abs(capturedPath[0].X - capturedPath[capturedPath.Count - 1].X) < 0.0001 &&
+					Math.Abs(capturedPath[0].Y - capturedPath[capturedPath.Count - 1].Y) < 0.0001;
+				Geometry.Add(new Marking.MarkingPath(capturedPath, closed));
+			}
+			capturedPath = null;
+		}
 		private static float factor_In2Px = 96;
 		private static float factor_Mm2Px = 96f / 25.4f;
 		private static float factor_Cm2Px = 96f / 2.54f;
@@ -126,6 +146,8 @@ namespace LaserGRBL.SvgConverter
 		/// </summary>
 		private void startConvert(XElement svgCode)
 		{
+			Geometry.Clear();
+			capturedPath = null;
 			countSubPath = 0;
 			startFirstElement = true;
 			gcodeScale = 1;
@@ -147,6 +169,7 @@ namespace LaserGRBL.SvgConverter
 				parseBasicElements(svgCode, 1);
 			parsePath(svgCode, 1);
 			parseGroup(svgCode, 1);
+			FinishCapture();
 			return;
 		}
 
@@ -1255,6 +1278,8 @@ namespace LaserGRBL.SvgConverter
 		private void gcodeStartPath(float x, float y, string cmt)
 		{
 			Point coord = translateXY(x, y);
+			FinishCapture();
+			CapturePoint(coord.X, coord.Y);
 			lastGCX = coord.X; lastGCY = coord.Y;
 			lastSetGCX = coord.X; lastSetGCY = coord.Y;
 			gcodePenUp(cmt);
@@ -1299,6 +1324,7 @@ namespace LaserGRBL.SvgConverter
 		private void gcodeMoveTo(Point orig, string cmt)
 		{
 			Point coord = translateXY(orig);
+			CapturePoint(coord.X, coord.Y);
 			rejectPoint = false;
 			gcodePenDown(cmt);
 			if (gcodeReduce && isReduceOk)
@@ -1327,6 +1353,20 @@ namespace LaserGRBL.SvgConverter
 		{
 			Point coordxy = translateXY(x, y);
 			Point coordij = translateIJ(i, j);
+			if (CaptureGeometry && capturedPath != null && capturedPath.Count > 0)
+			{
+				PointF start = capturedPath[capturedPath.Count - 1];
+				double cx = start.X + coordij.X, cy = start.Y + coordij.Y;
+				double radius = Math.Sqrt(coordij.X * coordij.X + coordij.Y * coordij.Y);
+				double angle = Math.Atan2(start.Y - cy, start.X - cx);
+				double sweep = Math.Atan2(coordxy.Y - cy, coordxy.X - cx) - angle;
+				while (sweep <= 0) sweep += 2 * Math.PI;
+				double step = radius > 0.01 ? 2 * Math.Acos(Math.Max(-1, 1 - 0.01 / radius)) : Math.PI / 8;
+				int segments = Math.Min(100000, Math.Max(2, (int)Math.Ceiling(sweep / step)));
+				for (int k = 1; k < segments; k++)
+					CapturePoint(cx + radius * Math.Cos(angle + sweep * k / segments), cy + radius * Math.Sin(angle + sweep * k / segments));
+				CapturePoint(coordxy.X, coordxy.Y);
+			}
 			gcodePenDown(cmt);
 			if (gcodeReduce && isReduceOk)      // restore last skipped point for accurat G2/G3 use
 			{

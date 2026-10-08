@@ -7,7 +7,8 @@ using System.Resources;
 // Le informazioni generali relative a un assembly sono controllate dal seguente 
 // set di attributi. Per modificare le informazioni associate a un assembly
 // occorre quindi modificare i valori di questi attributi.
-[assembly: AssemblyTitle ("Laser GRBL")]
+[assembly: AssemblyTitle ("Laser GRBL Marking")]
+[assembly: InternalsVisibleTo("LaserGRBL.Marking.Tests")]
 [assembly: AssemblyDescription ("")]
 [assembly: AssemblyConfiguration ("")]
 [assembly: AssemblyCompany ("")]

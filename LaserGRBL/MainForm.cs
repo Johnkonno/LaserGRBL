@@ -38,6 +38,17 @@ namespace LaserGRBL
 			ColorScheme.CurrentScheme = Settings.GetObject("Color Schema", Scheme.CADDark);
 
 			InitializeComponent();
+			ToolStripMenuItem markingMenu = new ToolStripMenuItem("マーキング（SVG・連番・QR）...");
+			markingMenu.Click += (sender, e) =>
+			{
+				if (Core.CanLoadNewFile)
+				{
+					try { using (Marking.MarkingForm form = new Marking.MarkingForm(Core)) form.ShowDialog(this); }
+					catch (Exception ex) { MessageBox.Show(this, ex.Message, "マーキング", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+				}
+			};
+			MnGenerate.DropDownItems.Add(new ToolStripSeparator());
+			MnGenerate.DropDownItems.Add(markingMenu);
 			ExceptionManager.ParentMain = this;
 
 			mLineWidthMenu = new List<ToolStripMenuItem>()
@@ -591,7 +602,7 @@ namespace LaserGRBL
 
 		private void RefreshFormTitle()
 		{
-			string FormTitle = string.Format("LaserGRBL v{0}", Program.CurrentVersion.ToString(3));
+			string FormTitle = string.Format("LaserGRBL Marking v{0}", Program.CurrentVersion.ToString(3));
 
 			if (Core.Type != Firmware.Grbl)
 				FormTitle = FormTitle + $" (for {Core.Type})";

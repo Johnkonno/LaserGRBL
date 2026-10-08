@@ -77,7 +77,7 @@ namespace LaserGRBL
 		{
 			if (UrlManager.UpdateMain != null || UrlManager.UpdateMirror != null)
 			{
-				System.Threading.ThreadPool.QueueUserWorkItem(new System.Threading.WaitCallback(GitHub.AsyncCheckVersion), manual);
+				// Fork builds must not replace themselves with an upstream installer.
 				System.Threading.ThreadPool.QueueUserWorkItem(new System.Threading.WaitCallback(GitHub.AsyncDownloadDB), manual);
 			}
 		}

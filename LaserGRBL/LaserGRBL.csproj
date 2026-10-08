@@ -89,6 +89,10 @@
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="Microsoft.CSharp" />
+    <Reference Include="QRCoder">
+      <HintPath>..\packages\QRCoder.1.4.3\lib\net40\QRCoder.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core">
       <RequiredTargetFramework>3.5</RequiredTargetFramework>
@@ -110,6 +114,9 @@
     <Compile Include="Autotrace\AutotraceTest.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="Marking\MarkingGeometry.cs" />
+    <Compile Include="Marking\SerialJournal.cs" />
+    <Compile Include="Marking\MarkingForm.cs" />
     <Compile Include="Autotrace\AutotraceTest.Designer.cs">
       <DependentUpon>AutotraceTest.cs</DependentUpon>
     </Compile>
@@ -2536,6 +2543,10 @@
     <Content Include="Grafica\text_align_left.png" />
     <Content Include="Grafica\warning.png" />
     <Content Include="Autotrace\autotrace.exe">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\licenses\QRCoder.txt">
+      <Link>Licenses\QRCoder.txt</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="Grafica\zdown01.png" />
