@@ -36,6 +36,7 @@ namespace LaserGRBL.Marking
         private readonly TextBox prefix = new TextBox();
         private readonly TextBox suffix = new TextBox();
         private readonly TextBox font = new TextBox { Text = "Arial" };
+        private readonly Button browseFont = new Button { Text = "探す...", Width = 60, Height = 26 };
         private readonly NumericUpDown width = Number(0.5m, 0.001m, 1000, 3);
         private readonly NumericUpDown spacing = Number(0.05m, 0.001m, 100, 3);
         private readonly NumericUpDown pitch = Number(0.2m, 0.001m, 100, 3);
@@ -143,7 +144,17 @@ namespace LaserGRBL.Marking
             serialControls.Add(Row("増分", increment));
             serialControls.Add(Row("ゼロ埋め桁数", digits));
             serialControls.Add(Row("接尾辞", suffix));
-            serialControls.Add(Row("文字のフォント", font));
+            FlowLayoutPanel fontRow = new FlowLayoutPanel { Height = 29, WrapContents = false, Margin = Padding.Empty };
+            font.Width = 161; font.Margin = new Padding(0, 0, 4, 0); fontRow.Controls.Add(font); fontRow.Controls.Add(browseFont);
+            serialControls.Add(Row("文字のフォント", fontRow)); inputs.Add(font);
+            browseFont.Click += (s, e) =>
+            {
+                string content;
+                try { content = SerialText(TemplateTimestamp()); }
+                catch (ArgumentException) { content = "わくわくメイカー\nIV号戦車 / Pz.IV\nWK-IVT-0001"; }
+                using (var dialog = new MarkingFontPicker(font.Text, content))
+                    if (dialog.ShowDialog(this) == DialogResult.OK) font.Text = dialog.SelectedFontName;
+            };
             serialControls.Add(Row("文字高さ mm", textHeight));
             serialControls.Add(Row("", withQr));
             serialControls.Add(Row("文字とQRの間隔 mm", gap));

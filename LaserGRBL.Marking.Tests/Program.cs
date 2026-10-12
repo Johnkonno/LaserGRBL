@@ -887,6 +887,66 @@ internal static class Program
                     form.Close();
                 }
             });
+            Test("Font search accepts Japanese English and full-width names", () =>
+            {
+                var entry=new MarkingFontEntry{Name="ＭＳ ゴシック",EnglishName="MS Gothic",JapaneseName="ＭＳ ゴシック"};
+                Assert(entry.Matches("ms gothic")&&entry.Matches("ＭＳ")&&entry.Matches("ゴシック"),"Font aliases cannot be searched");
+                Assert(!entry.Matches("ms serif"),"Multi-word search did not narrow results");
+                Assert(MarkingFontCatalog.Installed.Count>0,"Installed fonts missing");
+                Assert(MarkingFontCatalog.MissingCharacters("Arial","\uffff").Length==1,"Missing glyph was not detected");
+            });
+            Test("Font picker filters installed fonts and previews the actual machining outlines", () =>
+            {
+                var fonts=MarkingFontCatalog.Installed;
+                var target=fonts.FirstOrDefault(f=>f.EnglishName=="Meiryo")??fonts.First(f=>f.EnglishName=="Arial");
+                string content=target.JapaneseSample?"わくわくメイカー\nIV号戦車 / Pz.IV\nWK-IVT-0001":"Pz.IV\nWK-IVT-0001";
+                using(var picker=new MarkingFontPicker(target.Name,content))
+                {
+                    picker.Location=new Point(-2200,-2200);picker.StartPosition=FormStartPosition.Manual;picker.ShowInTaskbar=false;picker.Show();
+                    Assert(picker.SelectedFontName==target.Name,"Opening selector changed current font");
+                    ((TextBox)Field(picker,"search")).Text=target.EnglishName.ToUpperInvariant();
+                    Assert(((ListBox)Field(picker,"fontList")).Items.Cast<MarkingFontEntry>().All(f=>f.Matches(target.EnglishName)),"Filtered results include unrelated fonts");
+                    var preview=(FontOutlinePreview)Field(picker,"preview");
+                    var expected=MarkingGeometry.Text(content,target.Name,10).SelectMany(p=>p.Points).ToArray();
+                    Assert(preview.Paths.SelectMany(p=>p.Points).SequenceEqual(expected),"Preview differs from generated outlines");
+                    using(var bitmap=new Bitmap(picker.Width,picker.Height)){picker.DrawToBitmap(bitmap,new Rectangle(Point.Empty,picker.Size));bitmap.Save(Path.Combine(artifacts,"font-picker.png"));}
+                    ((TextBox)Field(picker,"sample")).Text="WK-IVT-0002";Assert(((Button)Field(picker,"apply")).Enabled,"Custom sample cannot be rendered");
+                    ((TextBox)Field(picker,"search")).Text="__NO_FONT_MATCH_986A__";
+                    Assert(picker.SelectedFontName==null&&!((Button)Field(picker,"apply")).Enabled,"Empty search can apply a font");
+                    ((TextBox)Field(picker,"search")).Text="";((CheckBox)Field(picker,"japaneseOnly")).Checked=true;
+                    Assert(((ListBox)Field(picker,"fontList")).Items.Cast<MarkingFontEntry>().All(f=>f.JapaneseSample),"Japanese filter included unsupported fonts");
+                    ((CheckBox)Field(picker,"japaneseOnly")).Checked=false;
+                    picker.DialogResult=DialogResult.Cancel;picker.Close();
+                }
+            });
+            Test("Layout font selection saves and undoes changes while fixed backgrounds and QR stay protected", () =>
+            {
+                var target=MarkingFontCatalog.Installed.First(f=>f.Name!="Arial"&&f.EnglishName!="Arial");
+                var document=new LayoutDocument{Items=new List<LayoutItem>{
+                    new LayoutItem{Kind=LayoutKind.Text,Name="TEXT",Content="WK-IVT-0001",FontName="Arial"},
+                    new LayoutItem{Kind=LayoutKind.QR,Name="QR",Content="WK-IVT-0001"}}};
+                var descriptor=System.ComponentModel.TypeDescriptor.GetProperties(new LayoutPropertyView(document.Items[0]))["FontName"];
+                Assert(descriptor.GetEditor(typeof(System.Drawing.Design.UITypeEditor)) is MarkingFontEditor,"Property font editor is missing");
+                using(var form=new LayoutForm(core))
+                {
+                    SetField(form,"document",document);SetField(form,"saved",LayoutDocument.Serialize(document));Method(form,"RefreshScene",0);
+                    Assert(((Button)Field(form,"fontButton")).Enabled,"TEXT font button disabled");
+                    Method(form,"ApplyFont",target.Name);Assert(document.Items[0].FontName==target.Name,"Font did not change");
+                    Assert(LayoutDocument.Deserialize(LayoutDocument.Serialize(document)).Items[0].FontName==target.Name,"Saved layout lost font name");
+                    Method(form,"Undo",false);document=(LayoutDocument)Field(form,"document");Assert(document.Items[0].FontName=="Arial","Font undo failed");
+                    Method(form,"RefreshScene",1);Assert(!((Button)Field(form,"fontButton")).Enabled,"QR font can be changed");
+                    document.Items[0].Background=true;Method(form,"RefreshScene",0);Assert(!((Button)Field(form,"fontButton")).Enabled,"Fixed background font can be changed");
+                    Method(form,"ApplyFont",target.Name);Assert(document.Items[0].FontName=="Arial","Fixed background changed font");
+                    document.Items[0].Background=false;SetField(form,"saved",LayoutDocument.Serialize(document));
+                    Method(form,"RefreshScene",0);form.Close();
+                }
+                using(var form=new MarkingForm(core))
+                {
+                    Assert(Field(form,"browseFont") is Button,"Serial font selector missing");
+                    ((ComboBox)Field(form,"source")).SelectedIndex=1;((CheckBox)Field(form,"formatMode")).Checked=false;
+                    Assert(((TextBox)Field(form,"font")).Parent is FlowLayoutPanel,"Serial font field not editable");
+                }
+            });
             core.Exiting();
         }
         Console.WriteLine("RESULT: "+passed+" passed, "+failed+" failed");

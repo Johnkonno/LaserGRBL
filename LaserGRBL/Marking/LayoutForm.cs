@@ -18,6 +18,7 @@ namespace LaserGRBL.Marking
         private readonly PropertyGrid properties = new PropertyGrid { Dock = DockStyle.Fill, ToolbarVisible = false, PropertySort = PropertySort.Categorized };
         private readonly CheckBox markEnabled = new CheckBox { Text="加工する", AutoSize=true };
         private readonly CheckBox background = new CheckBox { Text="背景／テンプレート（加工しない・固定）", AutoSize=true };
+        private readonly Button fontButton = new Button { Text = "フォントを探す...", AutoSize = true };
         private readonly Label selectionInfo=new Label{AutoSize=true};
         private readonly Dictionary<ArrangeMode,ToolStripMenuItem> alignItems=new Dictionary<ArrangeMode,ToolStripMenuItem>();
         private ToolStripDropDownButton alignButton;
@@ -58,8 +59,9 @@ namespace LaserGRBL.Marking
             split.Panel1.Controls.Add(canvas);
             SplitContainer sidebar = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal };
             sidebar.Panel1.Controls.Add(objects); sidebar.Panel2.Controls.Add(properties); split.Panel2.Controls.Add(sidebar);
-            FlowLayoutPanel flags = new FlowLayoutPanel { Dock=DockStyle.Top,Height=80,FlowDirection=FlowDirection.TopDown,WrapContents=false,Padding=new Padding(4) };
-            flags.Controls.AddRange(new Control[] { selectionInfo,markEnabled, background }); sidebar.Panel2.Controls.Add(flags);
+            FlowLayoutPanel flags = new FlowLayoutPanel { Dock=DockStyle.Top,Height=112,FlowDirection=FlowDirection.TopDown,WrapContents=false,Padding=new Padding(4) };
+            flags.Controls.AddRange(new Control[] { selectionInfo,markEnabled, background, fontButton }); sidebar.Panel2.Controls.Add(flags);
+            fontButton.Click += (s, e) => Safely(ChooseFont);
             markEnabled.CheckStateChanged += (s,e) => ToggleFlag(false); background.CheckStateChanged += (s,e) => ToggleFlag(true);
             Label order = new Label { Dock = DockStyle.Top, Height = 27, Text = "オブジェクト（上から加工する順序）", Padding = new Padding(4) };
             sidebar.Panel1.Controls.Add(order);
@@ -133,6 +135,7 @@ namespace LaserGRBL.Marking
             var selected=selection.Select(i=>document.Items[i]).ToList();var movable=selected.Where(i=>!i.Background).ToList();
             LayoutItem single=selected.Count==1?selected[0]:null;
             properties.SelectedObject=single==null?null:new LayoutPropertyView(single);properties.Enabled=single!=null&&!single.Background;
+            fontButton.Enabled = single != null && single.Kind == LayoutKind.Text && !single.Background;
             selectionInfo.Text=selection.Count==0?"未選択":selection.Count+"個選択"+(selected.Count!=movable.Count?"（固定 "+(selected.Count-movable.Count)+"個）":"");
             background.Enabled=selected.Count>0;background.ThreeState=false;
             background.CheckState=selected.Count==0||selected.All(i=>!i.Background)?CheckState.Unchecked:selected.All(i=>i.Background)?CheckState.Checked:CheckState.Indeterminate;
@@ -144,6 +147,22 @@ namespace LaserGRBL.Marking
             alignButton.Enabled=selected.Count>=2&&movable.Count>0;
             foreach(var pair in alignItems)pair.Value.Enabled=pair.Key==ArrangeMode.SpaceX||pair.Key==ArrangeMode.SpaceY?movable.Count>=3:alignButton.Enabled;
             refreshing=prior;canvas.Invalidate();
+        }
+        private void ChooseFont()
+        {
+            if (!fontButton.Enabled) return;
+            LayoutItem item = document.Items[canvas.SelectedIndex];
+            using (var dialog = new MarkingFontPicker(item.FontName, item.Content.Replace("{serial}", canvas.Serial)))
+                if (dialog.ShowDialog(this) == DialogResult.OK) ApplyFont(dialog.SelectedFontName);
+        }
+        private void ApplyFont(string name)
+        {
+            if (!fontButton.Enabled || string.IsNullOrWhiteSpace(name)) return;
+            int index = canvas.SelectedIndex; LayoutItem item = document.Items[index];
+            if (item.FontName == name) return;
+            string before = snapshot, prior = item.FontName; item.FontName = name;
+            try { item.Outlines(canvas.Serial); Commit(before); RefreshScene(index); }
+            catch { item.FontName = prior; throw; }
         }
         private void ToggleFlag(bool isBackground)
         {

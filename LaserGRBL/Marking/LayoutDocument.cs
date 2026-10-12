@@ -37,7 +37,7 @@ namespace LaserGRBL.Marking
         public LayoutKind Kind { get; set; }
         [DataMember, Category("1. 内容"), DisplayName("文字／QR内容"), Description("{serial} は加工時の連番に置き換わります。")]
         public string Content { get; set; }
-        [DataMember, Category("1. 内容"), DisplayName("フォント")]
+        [DataMember, Category("1. 内容"), DisplayName("フォント"), Editor(typeof(MarkingFontEditor), typeof(System.Drawing.Design.UITypeEditor)), Description("… ボタンで名前の検索と文字のプレビューができます。")]
         public string FontName { get; set; }
         [DataMember, Category("1. 内容"), DisplayName("文字高さ／QRサイズ mm"), Description("QRサイズには周囲の余白を含みます。SVGには適用しません。")]
         public double Size { get; set; }
