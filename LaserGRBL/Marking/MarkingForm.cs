@@ -17,7 +17,7 @@ namespace LaserGRBL.Marking
         private readonly GrblCore core;
         private readonly LayoutDocument layout;
         private readonly SerialJournal journal;
-        private readonly ComboBox source = Choice("SVG", "連番", "QRコード");
+        private readonly ComboBox source = Choice("SVG", "連番・差し込み", "QRコード");
         private readonly ComboBox mode = Choice("元のパス", "インセット／オフセット重ね", "パス沿いジグザグ");
         private readonly ComboBox laser = Choice("M3", "M4");
         private readonly TextBox svgFile = new TextBox { ReadOnly = true };
@@ -25,6 +25,12 @@ namespace LaserGRBL.Marking
         private readonly CheckBox formatMode = new CheckBox { Text = "フォーマット指定を使う", AutoSize = true };
         private readonly ComboBox serialMarker = Choice("n", "N", "#", "@");
         private readonly TextBox serialFormat = new TextBox { Text = "nnnnnn", MaxLength = 256 };
+        private readonly Button insertVariable = new Button { Text = "日付・連番などを挿入 ▼", AutoSize = true };
+        private readonly TextBox lot = new TextBox { MaxLength = 128 };
+        private readonly TextBox product = new TextBox { MaxLength = 128 };
+        private readonly TextBox operatorName = new TextBox { MaxLength = 128 };
+        private readonly CheckBox fixedTime = new CheckBox { Text = "日時を指定する", AutoSize = true };
+        private readonly DateTimePicker timestamp = new DateTimePicker { Format = DateTimePickerFormat.Custom, CustomFormat = "yyyy/MM/dd HH:mm:ss" };
         private readonly Label formatHelp = new Label { AutoSize = true, MaximumSize = new Size(230, 0) };
         private bool validSerial = true;
         private readonly TextBox prefix = new TextBox();
@@ -48,7 +54,7 @@ namespace LaserGRBL.Marking
         private readonly CheckBox withQr = new CheckBox { Text = "連番と同じ内容のQRを併記", AutoSize = true };
         private readonly CheckBox retreat = new CheckBox { Text = "加工終了位置から自動退避", AutoSize = true };
         private readonly Label status = new Label { AutoSize = true, MaximumSize = new Size(410, 0) };
-        private readonly Label serialDisplay = new Label { AutoSize = true };
+        private readonly Label serialDisplay = new Label { AutoSize = true, MaximumSize = new Size(230, 0) };
         private readonly MarkingPreview preview = new MarkingPreview();
         private readonly FlowLayoutPanel settings = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
         private readonly Button generate = new Button { Text = "軌道を生成・プレビュー", AutoSize = true };
@@ -68,6 +74,7 @@ namespace LaserGRBL.Marking
         private sealed class Generated
         {
             public string Code, Text;
+            public DateTime Timestamp;
             public DimensionCalibration Calibration;
             public bool Serial;
             public List<MarkingPath> Paths;
@@ -96,6 +103,10 @@ namespace LaserGRBL.Marking
             formatMode.Checked = journal.Pattern != null;
             serialMarker.SelectedItem = journal.PatternMarker ?? "n";
             serialFormat.Text = journal.Pattern ?? new string(serialMarker.Text[0], 6);
+            lot.Text = journal.Lot; product.Text = journal.Product; operatorName.Text = journal.OperatorName;
+            fixedTime.Checked = journal.UseFixedTime;
+            DateTime savedTime = journal.FixedTime ?? journal.Timestamp(journal.Next);
+            timestamp.Value = savedTime < timestamp.MinDate ? timestamp.MinDate : savedTime > timestamp.MaxDate ? timestamp.MaxDate : savedTime;
             power.Value = Math.Min(power.Maximum, Math.Max(power.Minimum, GrblCore.Configuration.MaxPWM));
             speed.Value = Math.Min(speed.Maximum, Math.Max(speed.Minimum, Settings.GetObject("GrayScaleConversion.VectorizeOptions.BorderSpeed", 1000)));
 
@@ -119,7 +130,14 @@ namespace LaserGRBL.Marking
             serialControls.Add(Row("", formatMode));
             serialControls.Add(Row("連番指定文字", serialMarker));
             serialControls.Add(Row("連番フォーマット", serialFormat));
+            serialControls.Add(Row("", insertVariable));
             serialControls.Add(Row("", formatHelp));
+            serialControls.Add(Row("ロット名 {lot}", lot));
+            serialControls.Add(Row("品名 {product}", product));
+            serialControls.Add(Row("担当者名 {operator}", operatorName));
+            serialControls.Add(Row("", fixedTime));
+            serialControls.Add(Row("差し込み日時", timestamp));
+            BuildVariableMenu();
             serialControls.Add(Row("接頭辞", prefix));
             serialControls.Add(Row("次に打刻する番号", next));
             serialControls.Add(Row("増分", increment));
@@ -165,6 +183,7 @@ namespace LaserGRBL.Marking
                 else if (control is ComboBox) ((ComboBox)control).SelectedIndexChanged += Changed;
                 else if (control is TextBox) control.TextChanged += Changed;
                 else if (control is CheckBox) ((CheckBox)control).CheckedChanged += Changed;
+                else if (control is DateTimePicker) ((DateTimePicker)control).ValueChanged += Changed;
             }
             generate.Click += Generate;
             load.Click += LoadPrepared;
@@ -211,6 +230,28 @@ namespace LaserGRBL.Marking
             return new NumericUpDown { Minimum = minimum, Maximum = maximum, DecimalPlaces = places,
                 Value = value, Increment = places == 0 ? 1 : 0.01m };
         }
+        private void BuildVariableMenu()
+        {
+            ContextMenuStrip menu = new ContextMenuStrip();
+            string[] labels = { "連番（5桁）", "日付", "時刻", "日時", "日付 yyyy-MM-dd", "時刻 HH:mm:ss",
+                "期限日（30日後）", "年", "年（2桁）", "月", "日", "時", "分", "秒", "曜日（英語）", "年間通算日",
+                "ロット名", "品名", "担当者名" };
+            string[] tokens = { "{serial:5}", "{date}", "{time}", "{datetime}", "{date:yyyy-MM-dd}", "{time:HH:mm:ss}",
+                "{date+30}", "{year}", "{yy}", "{month}", "{day}", "{hour}", "{minute}", "{second}", "{weekday}", "{dayofyear}",
+                "{lot}", "{product}", "{operator}" };
+            for (int i = 0; i < tokens.Length; i++)
+            {
+                string token = tokens[i];
+                menu.Items.Add(labels[i] + "  " + token, null, (s, e) => InsertVariable(token));
+            }
+            insertVariable.ContextMenuStrip = menu;
+            insertVariable.Click += (s, e) => menu.Show(insertVariable, new Point(0, insertVariable.Height));
+        }
+        private void InsertVariable(string token)
+        {
+            serialFormat.SelectedText = token;
+            serialFormat.Focus();
+        }
         private void Changed(object sender, EventArgs e)
         {
             if (layout != null && !loadingLayout)
@@ -223,10 +264,10 @@ namespace LaserGRBL.Marking
             preview.Invalidate();
             string marker = serialMarker.Text;
             formatHelp.Text = marker + " の個数＝ゼロ埋め桁数\n例：001A-" + new string(marker[0], 5) +
-                " → 001A-00001\n固定の " + marker + " は \\" + marker + "、固定の \\ は \\\\";
+                " → 001A-00001\n{date} 日付／{time} 時刻\n固定の " + marker + " は \\" + marker + "、固定の \\ は \\\\";
             try
             {
-                serialDisplay.Text = SerialText();
+                serialDisplay.Text = SerialText(TemplateTimestamp());
                 serialDisplay.ForeColor = SystemColors.ControlText;
                 validSerial = true;
             }
@@ -239,15 +280,21 @@ namespace LaserGRBL.Marking
             UpdateSerialControls();
             RefreshButtons();
         }
-        private string SerialText()
+        private DateTime TemplateTimestamp()
         {
-            return formatMode.Checked ? SerialJournal.Render(serialFormat.Text, (long)next.Value, serialMarker.Text) :
+            if (fixedTime.Checked) return SerialJournal.NormalizeTime(timestamp.Value);
+            return SerialJournal.NormalizeTime(journal.ReservedNumber == (long)next.Value && journal.ReservedAt.HasValue ? journal.ReservedAt.Value : DateTime.Now);
+        }
+        private string SerialText(DateTime time)
+        {
+            return formatMode.Checked ? SerialJournal.Render(serialFormat.Text, (long)next.Value, serialMarker.Text,
+                new MarkingVariables { Timestamp = time, Lot = lot.Text, Product = product.Text, OperatorName = operatorName.Text, Digits = (int)digits.Value }) :
                 prefix.Text + ((long)next.Value).ToString("D" + (int)digits.Value) + suffix.Text;
         }
         private void UpdateSerialControls()
         {
             bool visible = source.SelectedIndex == 1 && (layout == null || layout.UsesSerial);
-            foreach (Control c in new Control[] { serialMarker, serialFormat, formatHelp }) c.Parent.Visible = visible && formatMode.Checked;
+            foreach (Control c in new Control[] { serialMarker, serialFormat, formatHelp, insertVariable, lot, product, operatorName, fixedTime, timestamp }) c.Parent.Visible = visible && formatMode.Checked;
             foreach (Control c in new Control[] { prefix, suffix, digits }) c.Parent.Visible = visible && !formatMode.Checked;
         }
         private void UpdateSource()
@@ -259,7 +306,7 @@ namespace LaserGRBL.Marking
             {
                 foreach (Control row in settings.Controls) row.Visible = false;
                 foreach (Control c in new Control[] { originX, originY, retreat, retreatX, retreatY }) c.Parent.Visible = true;
-                if (layout.UsesSerial) foreach (Control c in new Control[] { formatMode, serialMarker, serialFormat, formatHelp, prefix, next, increment, digits, suffix, serialDisplay }) c.Parent.Visible = true;
+                if (layout.UsesSerial) foreach (Control c in new Control[] { formatMode, serialMarker, serialFormat, formatHelp, insertVariable, lot, product, operatorName, fixedTime, timestamp, prefix, next, increment, digits, suffix, serialDisplay }) c.Parent.Visible = true;
             }
             Changed(this, EventArgs.Empty);
             settings.AutoScrollPosition = Point.Empty;
@@ -269,6 +316,8 @@ namespace LaserGRBL.Marking
             bool active = busy || running || core.InProgram;
             foreach (Control c in inputs) c.Enabled = !active;
             next.Enabled = increment.Enabled = prefix.Enabled = suffix.Enabled = digits.Enabled = formatMode.Enabled = serialMarker.Enabled = serialFormat.Enabled = !active && !journal.Pending;
+            lot.Enabled = product.Enabled = operatorName.Enabled = fixedTime.Enabled = insertVariable.Enabled = !active && !journal.Pending;
+            timestamp.Enabled = !active && !journal.Pending && fixedTime.Checked;
             generate.Enabled = !active && !(source.SelectedIndex == 1 && (journal.Pending || serialFault || !validSerial));
             load.Enabled = !active && prepared != null && !prepared.Serial && core.CanLoadNewFile;
             export.Enabled = !active && prepared != null;
@@ -289,14 +338,16 @@ namespace LaserGRBL.Marking
             LayoutDocument job = layout == null ? null : LayoutDocument.Deserialize(LayoutDocument.Serialize(layout));
             int kind = source.SelectedIndex;
             string filename = svgFile.Text, content = qrContent.Text, family = font.Text;
-            string serialText = kind == 1 ? SerialText() : "";
+            DateTime capturedTime = TemplateTimestamp();
+            string serialText = kind == 1 ? SerialText(capturedTime) : "";
+            if (kind == 1) serialDisplay.Text = serialText;
             MarkingMode selectedMode = (MarkingMode)mode.SelectedIndex;
             bool includeQr = withQr.Checked;
             double w = (double)width.Value, step = (double)spacing.Value, wavePitch = (double)pitch.Value;
             double height = (double)textHeight.Value, size = (double)qrSize.Value, separation = (double)gap.Value;
             double feed = (double)speed.Value, sPower = (double)power.Value;
             string laserMode = laser.Text;
-            Generated generated = new Generated { Serial = kind == 1, Text = kind == 1 ? serialText : content,
+            Generated generated = new Generated { Serial = kind == 1, Text = kind == 1 ? serialText : content, Timestamp = capturedTime,
                 X = (double)originX.Value, Y = (double)originY.Value,
                 RetreatX = retreat.Checked ? (double)retreatX.Value : 0, RetreatY = retreat.Checked ? (double)retreatY.Value : 0 };
             busy = true;
@@ -368,6 +419,7 @@ namespace LaserGRBL.Marking
                     preview.Invalidate();
                     settings.AutoScrollPosition = Point.Empty;
                     status.Text = "生成済み：" + prepared.Paths.Count + "軌道" + (prepared.Serial ? " ／ " + prepared.Text : "") +
+                        (prepared.Serial && formatMode.Checked ? "\r\n差し込み日時：" + prepared.Timestamp.ToString("yyyy/MM/dd HH:mm:ss") + "（生成済みの内容は固定）" : "") +
                         "\r\n配置 X=" + generated.X + " Y=" + generated.Y + " mm。退避を含む範囲を確認してください。" +
                         "\r\n寸法補正 X=" + prepared.Calibration.X.ToString("0.########") + " Y=" + prepared.Calibration.Y.ToString("0.########") + "（表示は設計寸法）";
                 }
@@ -394,13 +446,7 @@ namespace LaserGRBL.Marking
                 core.LoopCount = 1;
                 if (prepared.Serial)
                 {
-                    journal.Next = (long)next.Value;
-                    journal.Increment = (long)increment.Value;
-                    journal.Digits = (int)digits.Value;
-                    journal.Prefix = prefix.Text; journal.Suffix = suffix.Text;
-                    journal.Pattern = formatMode.Checked ? serialFormat.Text : null;
-                    journal.PatternMarker = serialMarker.Text;
-                    journal.Begin(); // Persist before any command can reach the controller.
+                    ReserveSerial(); // Persist the generated text before any command can reach the controller.
                     serialLoaded = true;
                     loadedSerialCode = prepared.Code;
                 }
@@ -417,6 +463,18 @@ namespace LaserGRBL.Marking
             }
             catch (Exception ex) { running = false; if (prepared != null && prepared.Serial) serialFault = true; status.Text = ex.Message; }
             RefreshButtons();
+        }
+        private void ReserveSerial()
+        {
+            journal.Next = (long)next.Value;
+            journal.Increment = (long)increment.Value;
+            journal.Digits = (int)digits.Value;
+            journal.Prefix = prefix.Text; journal.Suffix = suffix.Text;
+            journal.Pattern = formatMode.Checked ? serialFormat.Text : null;
+            journal.PatternMarker = serialMarker.Text;
+            journal.Lot = lot.Text; journal.Product = product.Text; journal.OperatorName = operatorName.Text;
+            journal.UseFixedTime = fixedTime.Checked; journal.FixedTime = fixedTime.Checked ? (DateTime?)timestamp.Value : null;
+            journal.Begin(prepared.Timestamp, prepared.Text);
         }
         private void ProgramStarted() { if (running) started = true; }
         private void Completed()

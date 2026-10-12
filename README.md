@@ -1,5 +1,5 @@
 # LaserGRBL [![Donation](https://img.shields.io/badge/Donate-PayPal-green.svg)](https://www.paypal.com/donate?business=4WQX8HUBXRVUU&no_recurring=0&item_name=LaserGRBL&currency_code=EUR)
-This fork adds a millimeter-based layout editor with standard drawing tools, fixed non-marking templates, native bitmap outline tracing, SVG, text, and QR objects, per-object machining settings, serial numbers, laser-off retreat, and ruler-based X/Y dimension calibration. See [MARKING.md](MARKING.md) for usage and build instructions.
+This fork adds a millimeter-based layout editor with standard drawing tools, fixed non-marking templates, native bitmap outline tracing, SVG, text, and QR objects, per-object machining settings, formatted serial numbers and date/time/lot placeholders, laser-off retreat, and ruler-based X/Y dimension calibration. See [MARKING.md](MARKING.md) for usage and build instructions.
 
 Official website [http://lasergrbl.com](http://lasergrbl.com)
 

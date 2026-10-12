@@ -199,6 +199,71 @@ internal static class Program
             File.WriteAllText(file,"{\"Next\":42,\"Increment\":1,\"Digits\":6,\"Revision\":0,\"Pattern\":\"xxxxx\",\"PatternMarker\":\"x\"}");
             Throws<ArgumentException>(()=>SerialJournal.Open(file));
         });
+        Test("Date and time tokens share a timestamp and expand every component", () =>
+        {
+            var v=new MarkingVariables{Timestamp=new DateTime(2024,2,29,23,59,58)};
+            Assert(SerialJournal.Render("{date}|{time}|{datetime}",1,"n",v)=="20240229|235958|20240229-235958","Timestamp tokens differ");
+            Assert(SerialJournal.Render("{year}|{yy}|{month}|{day}|{hour}|{minute}|{second}|{weekday}|{dayofyear}",1,"n",v)=="2024|24|02|29|23|59|58|Thu|060","Date components incorrect");
+        });
+        Test("Custom date formats and expiry offsets handle leap days independently of culture", () =>
+        {
+            var previous=Thread.CurrentThread.CurrentCulture;
+            try
+            {
+                Thread.CurrentThread.CurrentCulture=CultureInfo.GetCultureInfo("ar-SA");
+                var v=new MarkingVariables{Timestamp=new DateTime(2024,2,29,23,59,58)};
+                Assert(SerialJournal.Render("{date:yyyy/MM/dd}-{time:HH:mm:ss}",1,"n",v)=="2024/02/29-23:59:58","Custom format or Gregorian date changed");
+                Assert(SerialJournal.Render("{date+1}|{date-1}|{date+30:yyyy-MM-dd}",1,"n",v)=="20240301|20240228|2024-03-30","Expiry calculation incorrect");
+            }
+            finally{Thread.CurrentThread.CurrentCulture=previous;}
+        });
+        Test("Named values are inserted literally and explicit serial fields preserve padding", () =>
+        {
+            var v=new MarkingVariables{Timestamp=new DateTime(2026,10,12),Lot="nN#@{date}",Product="P-n",OperatorName="みらい",Digits=4};
+            Assert(SerialJournal.Render("{lot}|{product}|{operator}|{serial}|{count:2}|###",42,"#",v)=="nN#@{date}|P-n|みらい|0042|42|042","Injected names were parsed as templates");
+            Assert(SerialJournal.Render(@"\{date\}-###",1,"#",v)=="{date}-001","Literal braces changed");
+        });
+        Test("Malformed variables, missing names and invalid date formats block generation", () =>
+        {
+            var v=new MarkingVariables{Timestamp=DateTime.MaxValue};
+            foreach(string pattern in new[]{"{date","{datee}","{}","{date:}","{date:%}","{serial:0}","{serial:19}","{serial:no}","{year:yy}","{lot}","{product}","{operator}","{date+36501}","{date+1}","{date+abc}","{year+1}","nn}"})
+                Throws<ArgumentException>(()=>SerialJournal.Render(pattern,1,"n",v));
+            v.Lot=new string('L',129);Throws<ArgumentException>(()=>SerialJournal.Render("{lot}",1,"n",v));
+        });
+        Test("Date-only and lot-only templates do not require a printed serial number", () =>
+        {
+            var v=new MarkingVariables{Timestamp=new DateTime(2026,10,12),Lot="L7"};
+            Assert(SerialJournal.Render("{date}",42,"n",v)=="20261012","Date-only template rejected");
+            Assert(SerialJournal.Render("{lot}",42,"n",v)=="L7","Lot-only template rejected");
+            Throws<ArgumentException>(()=>SerialJournal.Render("Fixed",42,"#",v));
+        });
+        Test("Generated timestamps survive restart and aborted retries until a completed job", () =>
+        {
+            string file=JournalFile();var j=SerialJournal.Open(file);
+            j.Pattern="{lot}-{datetime}-{time:fffzzz}-#####";j.PatternMarker="#";j.Lot="L7";j.Next=42;
+            DateTime generated=new DateTime(2024,2,29,23,59,58,123,DateTimeKind.Unspecified).AddTicks(4567);
+            string text=j.Format(generated);j.Begin(generated,text);
+            j=SerialJournal.Open(file);Assert(j.PendingText==text&&j.Format()==text,"Reserved timestamp or millisecond precision changed");
+            j.Resolve(false);j=SerialJournal.Open(file);Assert(j.Format()==text,"Retry acquired a new timestamp");
+            j.Begin();Assert(j.PendingText==text,"Retry generated a new mark");j.Resolve(true);
+            j=SerialJournal.Open(file);Assert(j.Next==43&&!j.ReservedAt.HasValue&&!j.ReservedNumber.HasValue,"Completed job retained retry timestamp");
+            j.Next=100;Assert(!j.ReservedNumber.HasValue,"Changed number retained reservation");
+        });
+        Test("A mismatched generated text is rejected before serial reservation", () =>
+        {
+            var j=SerialJournal.Open(JournalFile());j.Pattern="{datetime}-nnn";
+            DateTime time=new DateTime(2026,10,12,13,45,6);
+            Throws<InvalidOperationException>(()=>j.Begin(time,"wrong"));
+            Assert(!j.Pending&&!j.ReservedAt.HasValue,"Mismatched job was reserved");
+            string text=j.Format(time);j.Begin(time,text);Assert(j.PendingText==text,"Validated text changed at reservation");
+        });
+        Test("Manual timestamps and named values are restored across sessions", () =>
+        {
+            string file=JournalFile();var j=SerialJournal.Open(file);DateTime time=new DateTime(2026,10,12,13,45,6,DateTimeKind.Local);
+            j.Pattern="{product}-{lot}-{operator}-{date}-{serial:3}";j.Product="P1";j.Lot="L7";j.OperatorName="M";
+            j.UseFixedTime=true;j.FixedTime=time;j.Begin();j.Resolve(true);
+            j=SerialJournal.Open(file);Assert(j.Format()=="P1-L7-M-20261012-002"&&j.Timestamp(j.Next)==time,"Manual time or named values lost");
+        });
         using (Control sync = new Control())
         {
             var handle = sync.Handle;
@@ -763,6 +828,63 @@ internal static class Program
                 {
                     Assert(((ComboBox)Field(reopened,"serialMarker")).Text=="#","Saved marker not selected");
                     Assert(((Label)Field(reopened,"serialDisplay")).Text=="Pin-00043","Saved format preview changed");
+                }
+            });
+            Test("Variable insertion menu replaces selection and validates required values", () =>
+            {
+                using(var form=new MarkingForm(core))
+                {
+                    ((ComboBox)Field(form,"source")).SelectedIndex=1;
+                    ((CheckBox)Field(form,"formatMode")).Checked=true;
+                    ((ComboBox)Field(form,"serialMarker")).SelectedItem="#";
+                    var format=(TextBox)Field(form,"serialFormat");format.Text="A-#####";format.Select(2,5);
+                    Method(form,"InsertVariable","{date}");Assert(format.Text=="A-{date}","Token insertion lost selection");
+                    Assert(((Button)Field(form,"insertVariable")).ContextMenuStrip.Items.Count==19,"Variable menu incomplete");
+                    format.Text="{lot}-{serial:3}";((TextBox)Field(form,"lot")).Text="";
+                    Assert(!((Button)Field(form,"generate")).Enabled,"Empty required lot can be engraved");
+                    ((TextBox)Field(form,"lot")).Text="L7";Assert(((Button)Field(form,"generate")).Enabled,"Valid lot rejected");
+                    ((CheckBox)Field(form,"fixedTime")).Checked=true;
+                    Assert(((DateTimePicker)Field(form,"timestamp")).Enabled,"Manual timestamp cannot be changed");
+                    ((CheckBox)Field(form,"fixedTime")).Checked=false;
+                    Assert(!((DateTimePicker)Field(form,"timestamp")).Enabled,"Automatic timestamp can be manually changed");
+                }
+            });
+            Test("Whole-job variables freeze before machining and share exact text with QR and recovery", () =>
+            {
+                var document=new LayoutDocument{Items=new List<LayoutItem>{
+                    new LayoutItem{Kind=LayoutKind.Text,Name="製造日・ロット・連番",Content="{serial}",Size=5,Mode=LayoutMode.Fill},
+                    new LayoutItem{Kind=LayoutKind.QR,Name="製造情報QR",Content="{serial}",X=90,Size=15,Mode=LayoutMode.Fill}}};
+                using(var form=new MarkingForm(core,document))
+                {
+                    form.Location=new Point(-2200,-2200);form.StartPosition=FormStartPosition.Manual;form.ShowInTaskbar=false;form.Show();
+                    ((CheckBox)Field(form,"formatMode")).Checked=true;
+                    ((ComboBox)Field(form,"serialMarker")).SelectedItem="#";
+                    ((TextBox)Field(form,"serialFormat")).Text="{lot}-{date}-{time}-#####";
+                    ((TextBox)Field(form,"lot")).Text="L7";
+                    ((NumericUpDown)Field(form,"next")).Value=42;((NumericUpDown)Field(form,"increment")).Value=1;
+                    ((CheckBox)Field(form,"fixedTime")).Checked=true;
+                    DateTime time=new DateTime(2026,10,12,13,45,6,DateTimeKind.Local);
+                    ((DateTimePicker)Field(form,"timestamp")).Value=time;
+                    Method(form,"Generate",null,EventArgs.Empty);Pump(()=>!(bool)Field(form,"busy"));
+                    object prepared=Field(form,"prepared");Assert(prepared!=null,((Label)Field(form,"status")).Text);
+                    string text=(string)prepared.GetType().GetField("Text").GetValue(prepared);
+                    Assert(text=="L7-20261012-134506-00042","Generated variable text incorrect");
+                    Assert((DateTime)prepared.GetType().GetField("Timestamp").GetValue(prepared)==time,"Generated timestamp changed");
+                    var expected=document.Operations(text).SelectMany(o=>o.Paths).SelectMany(p=>p.Points).ToArray();
+                    var actual=((List<MarkingPath>)prepared.GetType().GetField("Paths").GetValue(prepared)).SelectMany(p=>p.Points).ToArray();
+                    Assert(expected.SequenceEqual(actual),"Variable text and QR differ");
+                    using(var bitmap=new Bitmap(form.Width,form.Height)){form.DrawToBitmap(bitmap,new Rectangle(Point.Empty,form.Size));bitmap.Save(Path.Combine(artifacts,"variables.png"));}
+                    Method(form,"ReserveSerial");var journal=(SerialJournal)Field(form,"journal");
+                    Assert(journal.PendingText==text&&journal.ReservedAt==time,"Run reservation reread the clock or lost names");
+                    using(var recovery=new MarkingForm(core,document))
+                    {
+                        Assert(((TextBox)Field(recovery,"lot")).Text=="L7"&&((DateTimePicker)Field(recovery,"timestamp")).Value==time,"Recovery lost variable settings");
+                        Assert(!((CheckBox)Field(recovery,"fixedTime")).Enabled&&!((TextBox)Field(recovery,"lot")).Enabled,"Pending variables can change");
+                    }
+                    SetField(form,"running",true);core.Arm();core.Feed("<Idle|MPos:0,0,0>");Application.DoEvents();
+                    Assert(journal.Next==43&&!journal.Pending,"Variable serial did not complete");
+                    core.Feed("<Idle|MPos:0,0,0>");Application.DoEvents();Assert(journal.Next==43,"Duplicate completion advanced twice");
+                    form.Close();
                 }
             });
             core.Exiting();
