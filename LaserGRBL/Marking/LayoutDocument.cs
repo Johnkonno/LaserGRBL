@@ -12,7 +12,7 @@ using System.Xml.Linq;
 
 namespace LaserGRBL.Marking
 {
-    internal enum LayoutKind { SVG, Text, QR, Rectangle, Ellipse, RegularPolygon, Path }
+    internal enum LayoutKind { SVG, Text, QR, Rectangle, Ellipse, RegularPolygon, Path, BitmapTrace }
     internal enum LayoutMode { Trace, Offset, Zigzag, Fill }
 
     [DataContract]
@@ -56,7 +56,7 @@ namespace LaserGRBL.Marking
         [DataMember, Category("1. 内容"), DisplayName("図形の高さ mm")] public double ShapeHeight { get; set; }
         [DataMember, Category("1. 内容"), DisplayName("正多角形の辺数")] public int Sides { get; set; }
         [Browsable(false)] public bool CanMark { get { return Enabled && !Background; } }
-        [Browsable(false)] public bool HasGeometry { get { return Kind == LayoutKind.SVG || Kind == LayoutKind.Path; } }
+        [Browsable(false)] public bool HasGeometry { get { return Kind == LayoutKind.SVG || Kind == LayoutKind.Path || Kind == LayoutKind.BitmapTrace; } }
         [DataMember, Category("3. 加工"), DisplayName("加工方式"), Description("Trace: 輪郭、Offset: 重ね、Zigzag: 太線ジグザグ、Fill: 閉じた図形の塗りつぶし。")]
         public LayoutMode Mode { get; set; }
         [DataMember, Category("3. 加工"), DisplayName("軌道幅 mm")]
@@ -89,7 +89,7 @@ namespace LaserGRBL.Marking
             Range(Spacing, 0.001, 100); Range(Pitch, 0.001, 100); Range(Speed, 1, 100000); Range(Power, 1, 100000);
             if (LaserMode != "M3" && LaserMode != "M4") throw new ArgumentException("M3またはM4を指定してください。");
             if (string.IsNullOrWhiteSpace(Name) || Name.Length > 200 || Content == null || Content.Length > 10000 || string.IsNullOrWhiteSpace(FontName)) throw new ArgumentException("名前・内容・フォントを確認してください。");
-            if (Kind == LayoutKind.Rectangle || Kind == LayoutKind.Ellipse || Kind == LayoutKind.RegularPolygon)
+            if (Kind == LayoutKind.Rectangle || Kind == LayoutKind.Ellipse || Kind == LayoutKind.RegularPolygon || Kind == LayoutKind.BitmapTrace)
             {
                 Range(ShapeWidth, 0.01, 10000); Range(ShapeHeight, 0.01, 10000);
                 if (Kind == LayoutKind.RegularPolygon && (Sides < 3 || Sides > 100)) throw new ArgumentException("正多角形の辺数は3〜100です。");
@@ -122,8 +122,9 @@ namespace LaserGRBL.Marking
         }
         public RectangleF Bounds(string serial)
         {
-            List<PointF> points = (Kind == LayoutKind.QR ? Transform(new List<MarkingPath> { new MarkingPath(new[] {
-                PointF.Empty, new PointF((float)Size, 0), new PointF((float)Size, (float)Size), new PointF(0, (float)Size) }, true) }, true) : Outlines(serial)).SelectMany(p => p.Points).ToList();
+            float nominalWidth = (float)(Kind == LayoutKind.QR ? Size : ShapeWidth), nominalHeight = (float)(Kind == LayoutKind.QR ? Size : ShapeHeight);
+            List<PointF> points = (Kind == LayoutKind.QR || Kind == LayoutKind.BitmapTrace ? Transform(new List<MarkingPath> { new MarkingPath(new[] {
+                PointF.Empty, new PointF(nominalWidth, 0), new PointF(nominalWidth, nominalHeight), new PointF(0, nominalHeight) }, true) }, true) : Outlines(serial)).SelectMany(p => p.Points).ToList();
             return RectangleF.FromLTRB(points.Min(p => p.X), points.Min(p => p.Y), points.Max(p => p.X), points.Max(p => p.Y));
         }
         public MarkingOperation Operation(string serial)

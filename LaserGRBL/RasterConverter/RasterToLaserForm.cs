@@ -24,10 +24,15 @@ namespace LaserGRBL.RasterConverter
 		GrblCore mCore;
 		ImageProcessor IP;
 		bool preventClose;
+        private readonly bool layoutTrace;
+        internal Marking.LayoutItem LayoutTraceResult { get; private set; }
 		bool supportPWM = Settings.GetObject("Support Hardware PWM", true);
 
-		private RasterToLaserForm(GrblCore core, string filename, bool append)
+		private RasterToLaserForm(GrblCore core, string filename, bool append) : this(core, filename, append, false) { }
+
+        internal RasterToLaserForm(GrblCore core, string filename, bool append, bool layoutTrace)
 		{
+            this.layoutTrace = layoutTrace;
 			InitializeComponent();
 			mCore = core;
 
@@ -57,6 +62,7 @@ namespace LaserGRBL.RasterConverter
             IconsMgr.PrepareButton(BtnOutliner, "mdi-auto-fix", icoToolSize);
 
             IP = new ImageProcessor(core, filename, GetImageSize(), append);
+            if (layoutTrace) IP.LayoutTraceOutput = item => LayoutTraceResult = item;
 			//PbOriginal.Image = IP.Original;
 			ImageProcessor.PreviewReady += OnPreviewReady;
 			ImageProcessor.PreviewBegin += OnPreviewBegin;
@@ -103,6 +109,14 @@ namespace LaserGRBL.RasterConverter
 			RbLineToLineTracing.Visible = supportPWM;
 
 			LoadSettings();
+            if (layoutTrace)
+            {
+                Text = "画像をトレースしてレイアウトへ追加";
+                RbVectorize.Checked = true; IP.SelectedTool = ImageProcessor.Tool.Vectorize;
+                IP.FillingDirection = ImageProcessor.Direction.None; CbFillingDirection.SelectedItem = ImageProcessor.Direction.None;
+                RbLineToLineTracing.Enabled = RbDithering.Enabled = RbCenterline.Enabled = RbNoProcessing.Enabled = false;
+                TT.SetToolTip(CbFillingDirection, "塗りつぶし・太線は追加後にレイアウトの加工方式で設定します。");
+            }
 			RefreshVE();
 		}
 
@@ -179,6 +193,15 @@ namespace LaserGRBL.RasterConverter
 			WB.Running = true;
 		}
 
+        internal static Marking.LayoutItem CreateLayoutTrace(Form parent, GrblCore core, string filename)
+        {
+            using (RasterToLaserForm form = new RasterToLaserForm(core, filename, false, true))
+            {
+                form.Icon = parent.Icon;
+                return form.ShowDialog(parent) == DialogResult.OK ? form.LayoutTraceResult : null;
+            }
+        }
+
 		internal static void CreateAndShowDialog(GrblCore core, string filename, bool append)
 		{
 			using (RasterToLaserForm f = new RasterToLaserForm(core, filename, append))
@@ -219,7 +242,7 @@ namespace LaserGRBL.RasterConverter
 					ResumeLayout();
 
 					StoreSettings();
-					Project.AddSettings(GetActualSettings()); // Store project settings
+                    if (!layoutTrace) Project.AddSettings(GetActualSettings()); // Store project settings
 
 					IP.GenerateGCode(); //processo asincrono che ritorna con l'evento "OnGenerationComplete"
 				}
@@ -228,6 +251,7 @@ namespace LaserGRBL.RasterConverter
 
 		void OnGenerationComplete(Exception ex)
 		{
+            if (layoutTrace && (IP == null || IsDisposed)) return;
 			if (InvokeRequired)
 			{
 				BeginInvoke(new ImageProcessor.GenerationCompleteDlg(OnGenerationComplete), ex);
@@ -254,6 +278,7 @@ namespace LaserGRBL.RasterConverter
 						if (ex != null && !(ex is ThreadAbortException))
 							MessageBox.Show(ex.Message);
 
+                        if (layoutTrace) DialogResult = ex == null && LayoutTraceResult != null ? DialogResult.OK : DialogResult.Cancel;
 						preventClose = false;
 						WT.Enabled = false;
 
@@ -269,7 +294,10 @@ namespace LaserGRBL.RasterConverter
 		private void StoreSettings()
 		{
             foreach (var setting in GetActualSettings())
+            {
+                if (layoutTrace && (setting.Key == "GrayScaleConversion.RasterConversionTool" || setting.Key == "GrayScaleConversion.VectorizeOptions.FillingDirection")) continue;
 				Settings.SetObject(setting.Key, setting.Value);
+            }
 		}
 
 		private void LoadSettings()
@@ -438,6 +466,7 @@ namespace LaserGRBL.RasterConverter
 			TbThreshold.Visible = !RbDithering.Checked && CbThreshold.Checked;
 
 			LblDitherMode.Visible = CbDither.Visible = RbDithering.Checked;
+            if (layoutTrace) CbFillingDirection.Enabled = UDFillingQuality.Enabled = false;
 		}
 
 		private void TbThreshold_ValueChanged(object sender, EventArgs e)
@@ -754,7 +783,11 @@ namespace LaserGRBL.RasterConverter
 				IP = null;
 				P?.Dispose();
 			}
-			finally{ Close(); }
+            finally
+            {
+                if (layoutTrace) { preventClose = false; LayoutTraceResult = null; DialogResult = DialogResult.Cancel; }
+                Close();
+            }
 		}
 
 		private void RbDithering_CheckedChanged(object sender, EventArgs e)

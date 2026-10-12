@@ -32,7 +32,7 @@ namespace LaserGRBL.Marking
             AddTool(tools, "新規", () => { if (ConfirmSave()) { document = new LayoutDocument(); filename = null; undo.Clear(); redo.Clear(); saved = LayoutDocument.Serialize(document); RefreshScene(-1); } });
             AddTool(tools, "開く", Open); AddTool(tools, "保存", () => Save(false)); AddTool(tools, "別名保存", () => Save(true));
             tools.Items.Add(new ToolStripSeparator());
-            AddTool(tools, "SVG追加", ImportSvg); AddTool(tools, "文字", () => AddItem(LayoutKind.Text, "TEXT"));
+            AddTool(tools, "画像トレース", ImportBitmap); AddTool(tools, "SVG追加", ImportSvg); AddTool(tools, "文字", () => AddItem(LayoutKind.Text, "TEXT"));
             AddTool(tools, "QR", () => AddItem(LayoutKind.QR, "https://example.com"));
             AddTool(tools, "連番文字", () => AddItem(LayoutKind.Text, "{serial}")); AddTool(tools, "連番QR", () => AddItem(LayoutKind.QR, "{serial}"));
             tools.Items.Add(new ToolStripSeparator()); AddTool(tools, "全体表示", () => canvas.Fit());
@@ -131,6 +131,15 @@ namespace LaserGRBL.Marking
         }
         private void AddItem(LayoutKind kind, string content)
         { Add(new LayoutItem { Kind = kind, Content = content, Name = (content == "{serial}" ? "連番" : "") + (kind == LayoutKind.QR ? "QR" : "文字"), Size = kind == LayoutKind.QR ? 15 : 5, Mode = LayoutMode.Fill }); }
+        private void ImportBitmap()
+        {
+            using (OpenFileDialog dialog = new OpenFileDialog { Filter="画像|*.bmp;*.png;*.jpg;*.jpeg;*.gif;*.tif;*.tiff|すべてのファイル|*.*" })
+                if (dialog.ShowDialog(this)==DialogResult.OK)
+                {
+                    LayoutItem item=RasterConverter.RasterToLaserForm.CreateLayoutTrace(this,core,dialog.FileName);
+                    if (item!=null) Add(item,false);
+                }
+        }
         private void ImportSvg()
         {
             using (OpenFileDialog dialog = new OpenFileDialog { Filter = "SVG|*.svg" })

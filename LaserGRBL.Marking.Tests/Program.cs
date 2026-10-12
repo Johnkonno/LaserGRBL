@@ -412,6 +412,96 @@ internal static class Program
                     File.WriteAllText(Path.Combine(artifacts,"drawing-template.lgrbl-layout"),LayoutDocument.Serialize(document));form.Close();
                 }
             });
+            Test("Native bitmap trace keeps image size, orientation, and holes", () =>
+            {
+                using(var bitmap=new Bitmap(100,100)) using(var graphics=Graphics.FromImage(bitmap))
+                {
+                    graphics.Clear(Color.White);graphics.FillRectangle(Brushes.Black,10,10,70,70);graphics.FillRectangle(Brushes.White,30,30,20,20);
+                    var item=LayoutBitmapTrace.Convert(bitmap,"画像トレース",new SizeF(20,20),true,2,false,0,true,0.2m,false);
+                    Near(20,item.Bounds("").Width);Near(20,item.Bounds("").Height);Assert(item.Geometry.Count==2&&item.Geometry.All(p=>p.Closed),"Hole/border lost");
+                    item.Mode=LayoutMode.Fill;var paths=item.Operation("").Paths;
+                    foreach(var path in paths.Where(p=>p.Points[0].Y>10.2&&p.Points[0].Y<13.8)) Assert(path.Points.Max(p=>p.X)<6.1||path.Points.Min(p=>p.X)>9.9,"Fill crossed image hole");
+                    Assert(bitmap.GetPixel(15,10).ToArgb()==Color.Black.ToArgb()&&bitmap.GetPixel(15,90).ToArgb()==Color.White.ToArgb(),"Input bitmap flipped/mutated");
+                    using(var top=new Bitmap(100,100)) using(var g=Graphics.FromImage(top))
+                    {g.Clear(Color.White);g.FillRectangle(Brushes.Black,10,10,20,20);var upper=LayoutBitmapTrace.Convert(top,"上",new SizeF(20,20),false,2,false,0,false,0.2m,false);Assert(upper.Geometry.SelectMany(p=>p.Points).Min(p=>p.Y)>13,"Image mirrored vertically");}
+                }
+            });
+            Test("Blank bitmap trace fails without a partial object and travel optimization is reused", () =>
+            {
+                using(var bitmap=new Bitmap(80,80)) using(var graphics=Graphics.FromImage(bitmap))
+                {
+                    graphics.Clear(Color.White);Throws<ArgumentException>(()=>LayoutBitmapTrace.Convert(bitmap,"白紙",new SizeF(10,10),false,2,false,0,false,0.2m,false));
+                    graphics.FillRectangle(Brushes.Black,10,10,15,15);graphics.FillRectangle(Brushes.Black,45,45,15,15);
+                    var traced=LayoutBitmapTrace.Convert(bitmap,"最適化",new SizeF(10,10),true,2,true,1,true,0.2m,true);Assert(traced.Geometry.Count==2,"Optimized trace lost contours");
+                }
+            });
+            Test("Native ImageProcessor exports layout paths without replacing main G-code", () =>
+            {
+                string file=ImageFixture("layout-trace-input.bmp");
+                core.LoadedFile.LoadMarkingCode(MarkingGeometry.GCode(Line(),500,80,"M3",0,0,0,0));int before=core.LoadedFile.Count;
+                LayoutItem result=null;Exception error=null;using(var done=new ManualResetEvent(false))
+                {
+                    var processor=new LaserGRBL.RasterConverter.ImageProcessor(core,file,new Size(250,250),false);
+                    LaserGRBL.RasterConverter.ImageProcessor.GenerationCompleteDlg completion=ex=>{error=ex;done.Set();};
+                    LaserGRBL.RasterConverter.ImageProcessor.GenerationComplete+=completion;
+                    try
+                    {
+                        processor.SelectedTool=LaserGRBL.RasterConverter.ImageProcessor.Tool.Vectorize;processor.Brightness=processor.Contrast=100;processor.Red=processor.Green=processor.Blue=100;
+                        processor.UseThreshold=true;processor.Threshold=50;processor.UseSmoothing=true;processor.Smoothing=1;processor.UseOptimize=true;processor.Optimize=0.2m;
+                        processor.TargetSize=new SizeF(20,20);processor.TargetOffset=new PointF(3,4);processor.BorderSpeed=700;processor.MaxPower=80;processor.LaserOn="M3";
+                        processor.LayoutTraceOutput=item=>result=item;processor.Resume();processor.GenerateGCode();
+                        Pump(()=>done.WaitOne(0));Assert(error==null,"Native conversion failed: "+error);Assert(result!=null,"No layout result");
+                        Assert(core.LoadedFile.Count==before&&core.LoadedFile.IsMarkingProgram,"Image conversion replaced the main job");Near(3,result.X);Near(4,result.Y);Near(700,result.Speed);Near(80,result.Power);
+                        File.Delete(file);var restored=LayoutDocument.Deserialize(LayoutDocument.Serialize(new LayoutDocument{Items=new List<LayoutItem>{result}}));Near(20,restored.Items[0].Bounds("").Width);
+                        var shape=restored.Items[0];shape.Scale=2;shape.Rotation=90;Near(40,shape.Bounds("").Height);shape.Background=true;Assert(!shape.CanMark,"Image template still machining");
+                    }
+                    finally {LaserGRBL.RasterConverter.ImageProcessor.GenerationComplete-=completion;processor.Dispose();}
+                }
+            });
+            Test("Image trace dialog reuses native controls and returns a layout object", () =>
+            {
+                string file=ImageFixture("native-trace-dialog.png");int before=core.LoadedFile.Count;
+                using(var form=new LaserGRBL.RasterConverter.RasterToLaserForm(core,file,false,true))
+                {
+                    form.Location=new Point(-2200,-2200);form.StartPosition=FormStartPosition.Manual;form.ShowInTaskbar=false;form.Show();
+                    Pump(()=>!((bool)Field(form,"preventClose"))&&((Button)Field(form,"BtnCreate")).Enabled);
+                    var processor=(LaserGRBL.RasterConverter.ImageProcessor)Field(form,"IP");Assert(processor.SelectedTool==LaserGRBL.RasterConverter.ImageProcessor.Tool.Vectorize,"Wrong native trace mode");
+                    Assert(!((RadioButton)Field(form,"RbLineToLineTracing")).Enabled&&!((Control)Field(form,"CbFillingDirection")).Enabled,"Unsupported import mode selectable");
+                    using(var bitmap=new Bitmap(form.Width,form.Height)){form.DrawToBitmap(bitmap,new Rectangle(Point.Empty,form.Size));bitmap.Save(Path.Combine(artifacts,"native-image-trace.png"));}
+                    processor.TargetSize=new SizeF(25,25);processor.TargetOffset=PointF.Empty;processor.BorderSpeed=650;processor.MaxPower=80;processor.LaserOn="M3";
+                    processor.GenerateGCode();Pump(()=>form.LayoutTraceResult!=null&&form.DialogResult==DialogResult.OK);
+                    Assert(core.LoadedFile.Count==before,"Native dialog replaced the main file");Assert(form.LayoutTraceResult.Kind==LayoutKind.BitmapTrace,"Image object type missing");
+                    var document=new LayoutDocument {Items=new List<LayoutItem>{form.LayoutTraceResult,new LayoutItem{Kind=LayoutKind.Text,Content="IMAGE",Y=27,Mode=LayoutMode.Fill}}};
+                    File.WriteAllText(Path.Combine(artifacts,"image-template.lgrbl-layout"),LayoutDocument.Serialize(document));
+                    using(var layout=new LayoutForm(core))
+                    {
+                        typeof(LayoutForm).GetField("document",BindingFlags.Instance|BindingFlags.NonPublic).SetValue(layout,document);typeof(LayoutForm).GetField("saved",BindingFlags.Instance|BindingFlags.NonPublic).SetValue(layout,LayoutDocument.Serialize(document));Method(layout,"RefreshScene",0);
+                        layout.Location=new Point(-2200,-2200);layout.StartPosition=FormStartPosition.Manual;layout.ShowInTaskbar=false;layout.Show();Application.DoEvents();((LayoutCanvas)Field(layout,"canvas")).Fit();
+                        using(var bitmap=new Bitmap(layout.Width,layout.Height)){layout.DrawToBitmap(bitmap,new Rectangle(Point.Empty,layout.Size));bitmap.Save(Path.Combine(artifacts,"layout-image.png"));}layout.Close();
+                    }
+                }
+            });
+            Test("Image trace cancellation returns no object and keeps the current job", () =>
+            {
+                string file=ImageFixture("cancel-trace.bmp");int before=core.LoadedFile.Count;
+                using(var form=new LaserGRBL.RasterConverter.RasterToLaserForm(core,file,false,true))
+                {
+                    form.Location=new Point(-2200,-2200);form.StartPosition=FormStartPosition.Manual;form.ShowInTaskbar=false;form.Show();Pump(()=>!((bool)Field(form,"preventClose")));
+                    var processor=(LaserGRBL.RasterConverter.ImageProcessor)Field(form,"IP");processor.TargetSize=new SizeF(50,50);processor.BorderSpeed=650;processor.MaxPower=80;processor.LaserOn="M3";processor.GenerateGCode();
+                    Method(form,"BtnCancelClick",null,EventArgs.Empty);Application.DoEvents();Assert(form.LayoutTraceResult==null&&form.DialogResult==DialogResult.Cancel,"Cancelled trace accepted");
+                    Assert(core.LoadedFile.Count==before,"Cancellation changed main job");
+                }
+            });
+            Test("Standard bitmap trace still loads the main job through the original conversion path", () =>
+            {
+                using(var bitmap=new Bitmap(80,80))using(var graphics=Graphics.FromImage(bitmap))
+                {
+                    graphics.Clear(Color.White);graphics.FillEllipse(Brushes.Black,10,10,60,60);
+                    var config=new GrblFile.L2LConf{res=5,fres=3,markSpeed=600,borderSpeed=600,maxPower=80,lOn="M3",lOff="M5",pwm=true,dir=LaserGRBL.RasterConverter.ImageProcessor.Direction.None};
+                    core.LoadedFile.LoadImagePotrace(bitmap,"standard-image.bmp",false,2,true,1,true,0.2m,true,config,false,core);
+                    Assert(core.LoadedFile.Count>10&&!core.LoadedFile.IsMarkingProgram,"Standard image import no longer loads its normal G-code");
+                }
+            });
             core.Exiting();
         }
         Console.WriteLine("RESULT: "+passed+" passed, "+failed+" failed");
@@ -419,6 +509,18 @@ internal static class Program
         return failed==0 ? 0 : 1;
     }
 
+    private static void Pump(Func<bool> complete)
+    {
+        var deadline=DateTime.UtcNow.AddSeconds(45);
+        while(!complete()&&DateTime.UtcNow<deadline){Application.DoEvents();Thread.Sleep(10);}
+        Assert(complete(),"Asynchronous image conversion timed out");
+    }
+    private static string ImageFixture(string name)
+    {
+        string file=Path.Combine(artifacts,name);using(var bitmap=new Bitmap(100,100))using(var g=Graphics.FromImage(bitmap))
+        {g.Clear(Color.White);g.FillEllipse(Brushes.Black,10,10,75,75);g.FillEllipse(Brushes.White,32,32,30,30);g.FillRectangle(Brushes.Black,75,75,15,15);bitmap.Save(file,name.EndsWith(".png")?System.Drawing.Imaging.ImageFormat.Png:System.Drawing.Imaging.ImageFormat.Bmp);}
+        return file;
+    }
     private static void CanvasMouse(LayoutCanvas canvas,string method,PointF position,int clicks)
     {
         PointF pixel=(PointF)canvas.GetType().GetMethod("Map",BindingFlags.Instance|BindingFlags.NonPublic).Invoke(canvas,new object[]{position});

@@ -1180,7 +1180,7 @@ namespace LaserGRBL
 			return rv;
 		}
 
-		private List<List<Curve>> OptimizePaths(List<List<Curve>> list, double changecost)
+		internal static List<List<Curve>> OptimizePaths(List<List<Curve>> list, double changecost)
 		{
 			if (list.Count <= 1)
 				return list;

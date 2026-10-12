@@ -79,6 +79,8 @@ namespace LaserGRBL.RasterConverter
 		public int MinPower;
 		public int MaxPower;
 
+        internal Action<Marking.LayoutItem> LayoutTraceOutput;
+
 		private string mFileName;
 		private bool mAppend;
 		GrblCore mCore;
@@ -1014,6 +1016,8 @@ namespace LaserGRBL.RasterConverter
 		{
 			try
 			{
+                if (LayoutTraceOutput != null && SelectedTool != Tool.Vectorize)
+                    throw new InvalidOperationException("レイアウトへの画像追加は輪郭トレースを使用します。");
 				int maxSize = Tools.OSHelper.Is64BitProcess ? 22000 * 22000 : 6000 * 7000; //on 32bit OS we have memory limit - allow Higher value on 64bit
 
 				double filesize = TargetSize.Width * TargetSize.Height;
@@ -1067,7 +1071,15 @@ namespace LaserGRBL.RasterConverter
 						conf.pwm = Settings.GetObject("Support Hardware PWM", true);
 						conf.firmwareType = Settings.GetObject("Firmware Type", Firmware.Grbl);
 
-						if (SelectedTool == Tool.Line2Line || SelectedTool == Tool.Dithering || SelectedTool == Tool.NoProcessing)
+                        if (LayoutTraceOutput != null)
+                        {
+                            Marking.LayoutItem item = Marking.LayoutBitmapTrace.Convert(bmp, System.IO.Path.GetFileNameWithoutExtension(mFileName), TargetSize,
+                                UseSpotRemoval, (int)SpotRemoval, UseSmoothing, Smoothing, UseOptimize, Optimize, OptimizeFast);
+                            item.X = TargetOffset.X; item.Y = TargetOffset.Y;
+                            item.Speed = BorderSpeed; item.Power = MaxPower; item.LaserMode = LaserOn; item.Validate();
+                            LayoutTraceOutput(item);
+                        }
+                        else if (SelectedTool == Tool.Line2Line || SelectedTool == Tool.Dithering || SelectedTool == Tool.NoProcessing)
 							mCore.LoadedFile.LoadImageL2L(bmp, mFileName, conf, mAppend, mCore);
 						else if (SelectedTool == Tool.Vectorize)
 							mCore.LoadedFile.LoadImagePotrace(bmp, mFileName, UseSpotRemoval, (int)SpotRemoval, UseSmoothing, Smoothing, UseOptimize, Optimize, OptimizeFast, conf, mAppend, mCore);
