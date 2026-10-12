@@ -157,6 +157,48 @@ internal static class Program
             j=SerialJournal.Open(file);Assert(j.Format()=="001A-00043"&&!j.Pending,"Formatted number did not advance");
             Throws<InvalidOperationException>(()=>j.Resolve(true));
         });
+        Test("Selectable markers substitute only the chosen character", () =>
+        {
+            foreach(string marker in new[]{"n","N","#","@"})
+            {
+                string fixedText=new string("nN#@".Where(c=>c!=marker[0]).ToArray());
+                Assert(SerialJournal.Render(fixedText+"-"+new string(marker[0],5),42,marker)==fixedText+"-00042","Unselected characters were replaced");
+                Assert(SerialJournal.Render(marker+"-"+new string(marker[0],3),42,marker)=="42-042","Repeated marker used different numbers");
+                Assert(SerialJournal.Render(new string(marker[0],2),123,marker)=="123","Selected marker truncated digits");
+            }
+            Assert(SerialJournal.Render("Pin-#####",1,"#")=="Pin-00001","Literal n in prefix changed");
+        });
+        Test("Each selectable marker can be escaped and must appear in a valid format", () =>
+        {
+            foreach(string marker in new[]{"n","N","#","@"})
+            {
+                Assert(SerialJournal.Render("\\"+marker+"-"+new string(marker[0],3),7,marker)==marker+"-007","Marker escape changed");
+                Throws<ArgumentException>(()=>SerialJournal.Render("\\"+marker,1,marker));
+                Throws<ArgumentException>(()=>SerialJournal.Render(new string(marker[0],19),1,marker));
+            }
+            foreach(string marker in new[]{null,"","X","nn","\\"})
+                Throws<ArgumentException>(()=>SerialJournal.Render("nnnnn",1,marker));
+        });
+        Test("Selected markers survive restart and retry without changing the reserved serial", () =>
+        {
+            foreach(string marker in new[]{"n","N","#","@"})
+            {
+                string file=JournalFile();var j=SerialJournal.Open(file);
+                j.Pattern="001A-"+new string(marker[0],5);j.PatternMarker=marker;j.Next=42;j.Begin();
+                j=SerialJournal.Open(file);Assert(j.PatternMarker==marker&&j.PendingText=="001A-00042","Marker reservation lost");
+                j.Resolve(false);Assert(j.Next==42,"Retry consumed number");j.Begin();j.Resolve(true);
+                Assert(SerialJournal.Open(file).Format()=="001A-00043","Selected marker increment incorrect");
+            }
+        });
+        Test("Older n format records default to n and invalid marker records are rejected", () =>
+        {
+            string file=JournalFile();
+            File.WriteAllText(file,"{\"Next\":42,\"Increment\":1,\"Digits\":6,\"Prefix\":\"\",\"Suffix\":\"\",\"Revision\":0,\"Pattern\":\"001A-nnnnn\"}");
+            var j=SerialJournal.Open(file);Assert(j.PatternMarker==null&&j.Format()=="001A-00042","Old n format changed");
+            j.Begin();j.Resolve(true);Assert(SerialJournal.Open(file).Format()=="001A-00043","Old format failed to advance");
+            File.WriteAllText(file,"{\"Next\":42,\"Increment\":1,\"Digits\":6,\"Revision\":0,\"Pattern\":\"xxxxx\",\"PatternMarker\":\"x\"}");
+            Throws<ArgumentException>(()=>SerialJournal.Open(file));
+        });
         using (Control sync = new Control())
         {
             var handle = sync.Handle;
@@ -658,6 +700,7 @@ internal static class Program
                     form.Location=new Point(-2200,-2200);form.StartPosition=FormStartPosition.Manual;form.ShowInTaskbar=false;form.Show();
                     ((CheckBox)Field(form,"formatMode")).Checked=true;
                     ((TextBox)Field(form,"serialFormat")).Text="001A-nnnnn";
+                    ((ComboBox)Field(form,"serialMarker")).SelectedItem="n";
                     ((NumericUpDown)Field(form,"next")).Value=1;
                     ((NumericUpDown)Field(form,"increment")).Value=1;
                     Assert(((TextBox)Field(form,"serialFormat")).Visible&&!((TextBox)Field(form,"prefix")).Visible,"Layout format rows are incorrect");
@@ -670,12 +713,56 @@ internal static class Program
                     var actual=((List<MarkingPath>)prepared.GetType().GetField("Paths").GetValue(prepared)).SelectMany(p=>p.Points).ToArray();
                     Assert(expected.SequenceEqual(actual),"Text and QR did not use the same formatted number");
                     using(var bitmap=new Bitmap(form.Width,form.Height)){form.DrawToBitmap(bitmap,new Rectangle(Point.Empty,form.Size));bitmap.Save(Path.Combine(artifacts,"serial-format.png"));}
-                    var journal=(SerialJournal)Field(form,"journal");journal.Pattern="001A-nnnnn";journal.Next=1;journal.Increment=1;journal.Begin();
+                    var journal=(SerialJournal)Field(form,"journal");journal.Pattern="001A-nnnnn";journal.PatternMarker="n";journal.Next=1;journal.Increment=1;journal.Begin();
                     SetField(form,"running",true);core.Arm();core.Feed("<Idle|MPos:0,0,0>");Application.DoEvents();
                     Assert(journal.Next==2&&!journal.Pending&&((Label)Field(form,"serialDisplay")).Text=="001A-00002","Formatted UI failed to advance once");
                     core.Feed("<Idle|MPos:0,0,0>");Application.DoEvents();Assert(journal.Next==2,"Duplicate completion consumed another number");
                     Assert(SerialJournal.Open(Path.Combine(GrblCore.DataPath,"serial-number.json")).Format()=="001A-00002","Saved format lost");
                     form.Close();
+                }
+            });
+            Test("Marker selection updates preview, whole-job QR and pending recovery controls", () =>
+            {
+                var document=new LayoutDocument{Items=new List<LayoutItem>{
+                    new LayoutItem{Kind=LayoutKind.Text,Name="連番文字",Content="{serial}",Size=5,Mode=LayoutMode.Fill},
+                    new LayoutItem{Kind=LayoutKind.QR,Name="連番QR",Content="{serial}",X=50,Size=15,Mode=LayoutMode.Fill}}};
+                using(var form=new MarkingForm(core,document))
+                {
+                    form.Location=new Point(-2200,-2200);form.StartPosition=FormStartPosition.Manual;form.ShowInTaskbar=false;form.Show();
+                    ((CheckBox)Field(form,"formatMode")).Checked=true;
+                    ((NumericUpDown)Field(form,"next")).Value=42;
+                    ((NumericUpDown)Field(form,"increment")).Value=1;
+                    foreach(string marker in new[]{"n","N","@","#"})
+                    {
+                        ((ComboBox)Field(form,"serialMarker")).SelectedItem=marker;
+                        ((TextBox)Field(form,"serialFormat")).Text="001A-"+new string(marker[0],5);
+                        Assert(((Label)Field(form,"serialDisplay")).Text=="001A-00042","Marker preview changed counter");
+                        Assert(((Label)Field(form,"formatHelp")).Text.StartsWith(marker+" の個数"),"Help uses wrong marker");
+                    }
+                    ((TextBox)Field(form,"serialFormat")).Text="Pin-#####";
+                    Method(form,"Generate",null,EventArgs.Empty);Pump(()=>!(bool)Field(form,"busy"));
+                    object prepared=Field(form,"prepared");Assert(prepared!=null,((Label)Field(form,"status")).Text);
+                    string serial=(string)prepared.GetType().GetField("Text").GetValue(prepared);
+                    Assert(serial=="Pin-00042","Selected marker generation incorrect");
+                    var expected=document.Operations(serial).SelectMany(o=>o.Paths).SelectMany(p=>p.Points).ToArray();
+                    var actual=((List<MarkingPath>)prepared.GetType().GetField("Paths").GetValue(prepared)).SelectMany(p=>p.Points).ToArray();
+                    Assert(expected.SequenceEqual(actual),"Whole-job text and QR differ");
+                    using(var bitmap=new Bitmap(form.Width,form.Height)){form.DrawToBitmap(bitmap,new Rectangle(Point.Empty,form.Size));bitmap.Save(Path.Combine(artifacts,"serial-marker.png"));}
+                    var journal=(SerialJournal)Field(form,"journal");journal.Pattern="Pin-#####";journal.PatternMarker="#";journal.Next=42;journal.Increment=1;journal.Begin();
+                    using(var recovery=new MarkingForm(core,document))
+                    {
+                        Assert(((ComboBox)Field(recovery,"serialMarker")).Text=="#"&&((TextBox)Field(recovery,"serialFormat")).Text=="Pin-#####","Saved selector did not restore");
+                        Assert(!((ComboBox)Field(recovery,"serialMarker")).Enabled&&!((TextBox)Field(recovery,"serialFormat")).Enabled&&!((Button)Field(recovery,"generate")).Enabled,"Pending format can be edited");
+                    }
+                    SetField(form,"running",true);core.Arm();core.Feed("<Idle|MPos:0,0,0>");Application.DoEvents();
+                    Assert(journal.Next==43&&!journal.Pending&&((Label)Field(form,"serialDisplay")).Text=="Pin-00043","Selected marker did not advance once");
+                    core.Feed("<Idle|MPos:0,0,0>");Application.DoEvents();Assert(journal.Next==43,"Duplicate completion changed counter");
+                    form.Close();
+                }
+                using(var reopened=new MarkingForm(core,document))
+                {
+                    Assert(((ComboBox)Field(reopened,"serialMarker")).Text=="#","Saved marker not selected");
+                    Assert(((Label)Field(reopened,"serialDisplay")).Text=="Pin-00043","Saved format preview changed");
                 }
             });
             core.Exiting();

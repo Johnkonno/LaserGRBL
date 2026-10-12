@@ -19,6 +19,7 @@ namespace LaserGRBL.Marking
         [DataMember] public string Suffix = "";
         [DataMember] public int Digits = 6;
         [DataMember(EmitDefaultValue = false)] public string Pattern;
+        [DataMember(EmitDefaultValue = false)] public string PatternMarker;
         [DataMember] public long Revision;
         private string filename;
 
@@ -30,16 +31,27 @@ namespace LaserGRBL.Marking
             else journal = new SerialJournal();
             if (journal.Next < 0 || journal.Increment < 1 || journal.Digits < 1 || journal.Digits > 18 || journal.Revision < 0)
                 throw new InvalidDataException("連番の記録が不正です。記録ファイルを確認してください。");
-            if (journal.Pattern != null) Render(journal.Pattern, journal.Next);
+            ValidateMarker(journal.PatternMarker ?? "n");
+            if (journal.Pattern != null) Render(journal.Pattern, journal.Next, journal.PatternMarker ?? "n");
             journal.filename = path;
             return journal;
         }
         public string Format()
         {
-            return Pattern == null ? Prefix + Next.ToString("D" + Digits, CultureInfo.InvariantCulture) + Suffix : Render(Pattern, Next);
+            return Pattern == null ? Prefix + Next.ToString("D" + Digits, CultureInfo.InvariantCulture) + Suffix : Render(Pattern, Next, PatternMarker ?? "n");
         }
         public static string Render(string pattern, long number)
         {
+            return Render(pattern, number, "n");
+        }
+        private static void ValidateMarker(string marker)
+        {
+            if (marker == null || marker.Length != 1 || "nN#@".IndexOf(marker[0]) < 0)
+                throw new ArgumentException("連番指定文字は n・N・#・@ から選んでください。");
+        }
+        public static string Render(string pattern, long number, string marker)
+        {
+            ValidateMarker(marker);
             if (number < 0) throw new ArgumentException("番号は0以上で指定してください。");
             if (string.IsNullOrEmpty(pattern) || pattern.Length > 256)
                 throw new ArgumentException("フォーマットは1～256文字で指定してください。");
@@ -52,18 +64,18 @@ namespace LaserGRBL.Marking
                     if (++i == pattern.Length) throw new ArgumentException("末尾の \\ には固定文字を続けてください。");
                     result.Append(pattern[i]);
                 }
-                else if (pattern[i] == 'n')
+                else if (pattern[i] == marker[0])
                 {
                     int start = i;
-                    while (i + 1 < pattern.Length && pattern[i + 1] == 'n') i++;
+                    while (i + 1 < pattern.Length && pattern[i + 1] == marker[0]) i++;
                     int width = i - start + 1;
-                    if (width > 18) throw new ArgumentException("n の連続は1～18個で指定してください。");
+                    if (width > 18) throw new ArgumentException(marker + " の連続は1～18個で指定してください。");
                     result.Append(number.ToString("D" + width, CultureInfo.InvariantCulture));
                     hasNumber = true;
                 }
                 else result.Append(pattern[i]);
             }
-            if (!hasNumber) throw new ArgumentException("連番部分を n で指定してください（例：001A-nnnnn）。");
+            if (!hasNumber) throw new ArgumentException("連番部分を " + marker + " で指定してください（例：001A-" + new string(marker[0], 5) + "）。");
             return result.ToString();
         }
         public void Begin()

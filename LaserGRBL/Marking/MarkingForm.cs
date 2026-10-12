@@ -23,9 +23,9 @@ namespace LaserGRBL.Marking
         private readonly TextBox svgFile = new TextBox { ReadOnly = true };
         private readonly TextBox qrContent = new TextBox { Text = "https://example.com" };
         private readonly CheckBox formatMode = new CheckBox { Text = "フォーマット指定を使う", AutoSize = true };
+        private readonly ComboBox serialMarker = Choice("n", "N", "#", "@");
         private readonly TextBox serialFormat = new TextBox { Text = "nnnnnn", MaxLength = 256 };
-        private readonly Label formatHelp = new Label { AutoSize = true, MaximumSize = new Size(230, 0),
-            Text = "n の個数＝ゼロ埋め桁数\n例：001A-nnnnn → 001A-00001\n固定の n は \\n、固定の \\ は \\\\" };
+        private readonly Label formatHelp = new Label { AutoSize = true, MaximumSize = new Size(230, 0) };
         private bool validSerial = true;
         private readonly TextBox prefix = new TextBox();
         private readonly TextBox suffix = new TextBox();
@@ -94,7 +94,8 @@ namespace LaserGRBL.Marking
             prefix.Text = journal.Prefix;
             suffix.Text = journal.Suffix;
             formatMode.Checked = journal.Pattern != null;
-            if (journal.Pattern != null) serialFormat.Text = journal.Pattern;
+            serialMarker.SelectedItem = journal.PatternMarker ?? "n";
+            serialFormat.Text = journal.Pattern ?? new string(serialMarker.Text[0], 6);
             power.Value = Math.Min(power.Maximum, Math.Max(power.Minimum, GrblCore.Configuration.MaxPWM));
             speed.Value = Math.Min(speed.Maximum, Math.Max(speed.Minimum, Settings.GetObject("GrayScaleConversion.VectorizeOptions.BorderSpeed", 1000)));
 
@@ -116,6 +117,7 @@ namespace LaserGRBL.Marking
             svgControls.Add(Row("ジグザグピッチ mm", pitch));
             qrControls.Add(Row("QRの内容", qrContent));
             serialControls.Add(Row("", formatMode));
+            serialControls.Add(Row("連番指定文字", serialMarker));
             serialControls.Add(Row("連番フォーマット", serialFormat));
             serialControls.Add(Row("", formatHelp));
             serialControls.Add(Row("接頭辞", prefix));
@@ -219,6 +221,9 @@ namespace LaserGRBL.Marking
             prepared = null;
             preview.Paths = null;
             preview.Invalidate();
+            string marker = serialMarker.Text;
+            formatHelp.Text = marker + " の個数＝ゼロ埋め桁数\n例：001A-" + new string(marker[0], 5) +
+                " → 001A-00001\n固定の " + marker + " は \\" + marker + "、固定の \\ は \\\\";
             try
             {
                 serialDisplay.Text = SerialText();
@@ -236,13 +241,13 @@ namespace LaserGRBL.Marking
         }
         private string SerialText()
         {
-            return formatMode.Checked ? SerialJournal.Render(serialFormat.Text, (long)next.Value) :
+            return formatMode.Checked ? SerialJournal.Render(serialFormat.Text, (long)next.Value, serialMarker.Text) :
                 prefix.Text + ((long)next.Value).ToString("D" + (int)digits.Value) + suffix.Text;
         }
         private void UpdateSerialControls()
         {
             bool visible = source.SelectedIndex == 1 && (layout == null || layout.UsesSerial);
-            foreach (Control c in new Control[] { serialFormat, formatHelp }) c.Parent.Visible = visible && formatMode.Checked;
+            foreach (Control c in new Control[] { serialMarker, serialFormat, formatHelp }) c.Parent.Visible = visible && formatMode.Checked;
             foreach (Control c in new Control[] { prefix, suffix, digits }) c.Parent.Visible = visible && !formatMode.Checked;
         }
         private void UpdateSource()
@@ -254,7 +259,7 @@ namespace LaserGRBL.Marking
             {
                 foreach (Control row in settings.Controls) row.Visible = false;
                 foreach (Control c in new Control[] { originX, originY, retreat, retreatX, retreatY }) c.Parent.Visible = true;
-                if (layout.UsesSerial) foreach (Control c in new Control[] { formatMode, serialFormat, formatHelp, prefix, next, increment, digits, suffix, serialDisplay }) c.Parent.Visible = true;
+                if (layout.UsesSerial) foreach (Control c in new Control[] { formatMode, serialMarker, serialFormat, formatHelp, prefix, next, increment, digits, suffix, serialDisplay }) c.Parent.Visible = true;
             }
             Changed(this, EventArgs.Empty);
             settings.AutoScrollPosition = Point.Empty;
@@ -263,7 +268,7 @@ namespace LaserGRBL.Marking
         {
             bool active = busy || running || core.InProgram;
             foreach (Control c in inputs) c.Enabled = !active;
-            next.Enabled = increment.Enabled = prefix.Enabled = suffix.Enabled = digits.Enabled = formatMode.Enabled = serialFormat.Enabled = !active && !journal.Pending;
+            next.Enabled = increment.Enabled = prefix.Enabled = suffix.Enabled = digits.Enabled = formatMode.Enabled = serialMarker.Enabled = serialFormat.Enabled = !active && !journal.Pending;
             generate.Enabled = !active && !(source.SelectedIndex == 1 && (journal.Pending || serialFault || !validSerial));
             load.Enabled = !active && prepared != null && !prepared.Serial && core.CanLoadNewFile;
             export.Enabled = !active && prepared != null;
@@ -394,6 +399,7 @@ namespace LaserGRBL.Marking
                     journal.Digits = (int)digits.Value;
                     journal.Prefix = prefix.Text; journal.Suffix = suffix.Text;
                     journal.Pattern = formatMode.Checked ? serialFormat.Text : null;
+                    journal.PatternMarker = serialMarker.Text;
                     journal.Begin(); // Persist before any command can reach the controller.
                     serialLoaded = true;
                     loadedSerialCode = prepared.Code;
