@@ -16,7 +16,10 @@ namespace LaserGRBL.Marking
             {"元に戻す","undo"},{"やり直し","redo"},{"画像トレース","image-plus"},{"SVG追加","svg"},{"文字","format-text"},
             {"QR","qrcode"},{"連番文字","counter"},{"連番QR","qrcode-plus"},{"全体表示","fit-to-screen-outline"},
             {"定規・寸法補正","ruler-square"},{"Gコード生成 →","code-braces"},{"複製","content-copy"},{"削除","delete-outline"},
-            {"加工順を上へ","arrow-up"},{"加工順を下へ","arrow-down"}
+            {"加工順を上へ","arrow-up"},{"加工順を下へ","arrow-down"},{"整列","align-horizontal-center"},
+            {"左揃え","align-horizontal-left"},{"左右中央揃え","align-horizontal-center"},{"右揃え","align-horizontal-right"},
+            {"上揃え","align-vertical-top"},{"上下中央揃え","align-vertical-center"},{"下揃え","align-vertical-bottom"},
+            {"左右を等間隔","align-horizontal-distribute"},{"上下を等間隔","align-vertical-distribute"}
         };
         private static readonly string[] drawingIcons = { "cursor-default-outline","vector-line","vector-rectangle","circle-outline","ellipse-outline",
             "vector-polyline","vector-polygon","hexagon-outline","vector-curve","pencil-outline" };
@@ -26,10 +29,26 @@ namespace LaserGRBL.Marking
                 BackColor=Color.FromArgb(246,248,251),Padding=new Padding(5),Renderer=new ToolStripProfessionalRenderer(new ToolbarColors()) };
         }
         public static ToolStripButton Command(string text) { return Button(text,commands[text],text=="削除"?Color.FromArgb(190,65,65):text=="Gコード生成 →"?Color.FromArgb(31,128,79):Color.FromArgb(50,85,120)); }
+        public static ToolStripDropDownButton Menu(string text)
+        {
+            using(ToolStripButton source=Command(text))
+            {
+                Image image=(Image)source.Image.Clone();
+                var menu=new ToolStripDropDownButton(text,image){DisplayStyle=ToolStripItemDisplayStyle.Image,AutoSize=false,Size=new Size(48,40),ToolTipText=text,AccessibleName=text};
+                menu.Disposed+=(s,e)=>image.Dispose();return menu;
+            }
+        }
+        public static ToolStripMenuItem MenuItem(string text)
+        {
+            using(ToolStripButton source=Command(text))
+            {
+                Image image=(Image)source.Image.Clone();var item=new ToolStripMenuItem(text,image);item.Disposed+=(s,e)=>image.Dispose();return item;
+            }
+        }
         public static ToolStripButton Drawing(DrawingTool tool,string text)
         {
             ToolStripButton button=Button(text,drawingIcons[(int)tool],Color.FromArgb(50,85,120));
-            string hint=tool==DrawingTool.Select?"ドラッグで移動、右上の□で拡大縮小":
+            string hint=tool==DrawingTool.Select?"Ctrl／Shiftクリック・範囲ドラッグで複数選択、ドラッグでまとめて移動":
                 tool==DrawingTool.Circle||tool==DrawingTool.RegularPolygon?"中心から半径までドラッグ":
                 tool==DrawingTool.Polyline||tool==DrawingTool.Polygon?"頂点をクリック、Enter／ダブルクリックで確定":
                 tool==DrawingTool.Arc?"始点・通過点・終点をクリック":tool==DrawingTool.Freehand?"左ボタンを押したまま描画":"始点から終点へドラッグ";

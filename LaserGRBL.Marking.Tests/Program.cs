@@ -502,6 +502,89 @@ internal static class Program
                     Assert(core.LoadedFile.Count>10&&!core.LoadedFile.IsMarkingProgram,"Standard image import no longer loads its normal G-code");
                 }
             });
+            Test("Alignment uses rotated bounds and a selected fixed template as its reference", () =>
+            {
+                var template=new LayoutItem{Kind=LayoutKind.Rectangle,Name="背景",ShapeWidth=100,ShapeHeight=60,Background=true};
+                var a=new LayoutItem{Kind=LayoutKind.Text,Content="ALIGN",Size=5,Scale=2,Rotation=30,X=5,Y=3};var b=new LayoutItem{Kind=LayoutKind.Ellipse,ShapeWidth=12,ShapeHeight=8,X=75,Y=20};
+                var document=new LayoutDocument{Items=new List<LayoutItem>{template,a,b}};
+                LayoutArrange.Apply(document,new[]{0,1,2},ArrangeMode.CenterX,"");LayoutArrange.Apply(document,new[]{0,1,2},ArrangeMode.CenterY,"");
+                foreach(var item in new[]{a,b}){var bounds=item.Bounds("");Near(50,bounds.Left+bounds.Width/2);Near(30,bounds.Top+bounds.Height/2);}
+                Near(0,template.X);Near(0,template.Y);Near(30,a.Rotation);Near(2,a.Scale);
+            });
+            Test("Every edge alignment respects positive machine Y and preserves object sizes", () =>
+            {
+                foreach(ArrangeMode mode in new[]{ArrangeMode.Left,ArrangeMode.Right,ArrangeMode.Top,ArrangeMode.Bottom,ArrangeMode.CenterX,ArrangeMode.CenterY})
+                {
+                    var a=new LayoutItem{Kind=LayoutKind.Rectangle,ShapeWidth=10,ShapeHeight=5,X=5,Y=0};var b=new LayoutItem{Kind=LayoutKind.Rectangle,ShapeWidth=20,ShapeHeight=15,X=40,Y=30};
+                    var document=new LayoutDocument{Items=new List<LayoutItem>{a,b}};LayoutArrange.Apply(document,new[]{0,1},mode,"");var x=a.Bounds("");var y=b.Bounds("");
+                    Near(10,x.Width);Near(15,y.Height);
+                    if(mode==ArrangeMode.Left) {Near(5,x.Left);Near(5,y.Left);}if(mode==ArrangeMode.Right){Near(60,x.Right);Near(60,y.Right);}
+                    if(mode==ArrangeMode.Top){Near(45,x.Bottom);Near(45,y.Bottom);}if(mode==ArrangeMode.Bottom){Near(0,x.Top);Near(0,y.Top);}
+                    if(mode==ArrangeMode.CenterX)Near(x.Left+x.Width/2,y.Left+y.Width/2);if(mode==ArrangeMode.CenterY)Near(x.Top+x.Height/2,y.Top+y.Height/2);
+                }
+            });
+            Test("Equal spacing measures edge gaps between differently sized objects and keeps the endpoints", () =>
+            {
+                var a=new LayoutItem{Kind=LayoutKind.Rectangle,ShapeWidth=10,ShapeHeight=10,X=0,Y=0};var b=new LayoutItem{Kind=LayoutKind.Rectangle,ShapeWidth=20,ShapeHeight=20,X=15,Y=17};var c=new LayoutItem{Kind=LayoutKind.Rectangle,ShapeWidth=30,ShapeHeight=30,X=70,Y=80};
+                var bg=new LayoutItem{Kind=LayoutKind.Rectangle,ShapeWidth=200,ShapeHeight=200,Background=true};var document=new LayoutDocument{Items=new List<LayoutItem>{a,b,c,bg}};
+                LayoutArrange.Apply(document,new[]{0,1,2,3},ArrangeMode.SpaceX,"");Near(30,b.X);Near(0,a.X);Near(70,c.X);Near(20,b.Bounds("").Left-a.Bounds("").Right);Near(20,c.Bounds("").Left-b.Bounds("").Right);
+                LayoutArrange.Apply(document,new[]{0,1,2,3},ArrangeMode.SpaceY,"");Near(35,b.Y);Near(0,a.Y);Near(80,c.Y);Near(25,b.Bounds("").Top-a.Bounds("").Bottom);Near(25,c.Bounds("").Top-b.Bounds("").Bottom);Near(0,bg.X);Near(0,bg.Y);
+                Throws<ArgumentException>(()=>LayoutArrange.Apply(document,new[]{0,1,3},ArrangeMode.SpaceX,""));
+            });
+            Test("An out-of-range alignment fails atomically and group movement clamps one shared delta", () =>
+            {
+                var bg=new LayoutItem{Kind=LayoutKind.Rectangle,ShapeWidth=10000,ShapeHeight=10,X=10000,Background=true};var a=new LayoutItem{Kind=LayoutKind.Rectangle,ShapeWidth=10000,ShapeHeight=10,X=0};var b=new LayoutItem{Kind=LayoutKind.Rectangle,ShapeWidth=1,ShapeHeight=1,X=1};
+                var document=new LayoutDocument{Items=new List<LayoutItem>{bg,a,b}};Throws<ArgumentException>(()=>LayoutArrange.Apply(document,new[]{0,1,2},ArrangeMode.Right,""));Near(0,a.X);Near(1,b.X);
+                var delta=LayoutArrange.ClampMove(new[]{new PointF(9990,0),new PointF(9999,10)},50,5);Near(1,delta.X);Near(5,delta.Y);
+            });
+            Test("Canvas modifiers and marquee selection collect objects over a fixed background", () =>
+            {
+                var a=new LayoutItem{Kind=LayoutKind.Rectangle,ShapeWidth=10,ShapeHeight=5,X=10,Y=10};var b=new LayoutItem{Kind=LayoutKind.Rectangle,ShapeWidth=10,ShapeHeight=5,X=40,Y=10};var bg=new LayoutItem{Kind=LayoutKind.Rectangle,ShapeWidth=100,ShapeHeight=60,Background=true};
+                using(var canvas=new LayoutCanvas{Width=800,Height=600,Document=new LayoutDocument{Items=new List<LayoutItem>{bg,a,b}}})
+                {
+                    canvas.Rebuild();Method(canvas,"ClickSelect",1,Keys.None);Method(canvas,"ClickSelect",2,Keys.Control);Assert(canvas.SelectedIndices.SequenceEqual(new[]{1,2}),"Ctrl add failed");
+                    Method(canvas,"ClickSelect",1,Keys.Shift);Assert(canvas.SelectedIndices.SequenceEqual(new[]{2}),"Shift toggle failed");
+                    CanvasMouse(canvas,"OnMouseDown",new PointF(5,5),1);CanvasMouse(canvas,"OnMouseMove",new PointF(55,20),0);CanvasMouse(canvas,"OnMouseUp",new PointF(55,20),1);Assert(canvas.SelectedIndices.SequenceEqual(new[]{1,2}),"Background blocks marquee selection");
+                    canvas.SetSelection(new[]{0,1,2},1,false);CanvasMouse(canvas,"OnMouseDown",new PointF(15,12),1);
+                    PointF pixel=(PointF)canvas.GetType().GetMethod("Map",BindingFlags.Instance|BindingFlags.NonPublic).Invoke(canvas,new object[]{new PointF(15,12)});float zoom=(float)Field(canvas,"zoom");
+                    int x=(int)Math.Round(pixel.X)+28,y=(int)Math.Round(pixel.Y)-14;Method(canvas,"OnMouseMove",new MouseEventArgs(MouseButtons.Left,0,x,y,0));Method(canvas,"OnMouseUp",new MouseEventArgs(MouseButtons.Left,1,x,y,0));
+                    Near(10+28/zoom,a.X);Near(40+28/zoom,b.X);Near(10+14/zoom,a.Y);Near(a.Y,b.Y);Near(0,bg.X);Near(0,bg.Y);Assert(canvas.SelectedIndices.Count==3,"Drag lost selection");
+                    double savedX=a.X,savedY=a.Y;CanvasMouse(canvas,"OnMouseDown",new PointF((float)(a.X+5),(float)(a.Y+2)),1);CanvasMouse(canvas,"OnMouseMove",new PointF((float)(a.X+10),(float)(a.Y+7)),0);Method(canvas,"OnKeyDown",new KeyEventArgs(Keys.Escape));Near(savedX,a.X);Near(savedY,a.Y);Near(30,b.X-a.X);
+                }
+            });
+            Test("Multi-selection synchronizes the list, moves as one undo action, and batches duplicate/delete", () =>
+            {
+                var document=new LayoutDocument{Items=new List<LayoutItem>{new LayoutItem{Kind=LayoutKind.Rectangle,Name="材料",ShapeWidth=100,ShapeHeight=60,Background=true},
+                    new LayoutItem{Kind=LayoutKind.Rectangle,Name="A",ShapeWidth=10,ShapeHeight=5,X=10,Y=10},new LayoutItem{Kind=LayoutKind.Ellipse,Name="B",ShapeWidth=10,ShapeHeight=5,X=40,Y=10}}};
+                using(var form=new LayoutForm(core))
+                {
+                    SetField(form,"document",document);SetField(form,"saved",LayoutDocument.Serialize(document));Method(form,"RefreshScene",-1);form.Location=new Point(-2200,-2200);form.StartPosition=FormStartPosition.Manual;form.ShowInTaskbar=false;form.Show();Application.DoEvents();
+                    Method(form,"SelectMany",new[]{0,1,2},1);var canvas=(LayoutCanvas)Field(form,"canvas");canvas.Fit();Assert(((ListBox)Field(form,"objects")).SelectedIndices.Count==3,"List selection differs from canvas");
+                    CanvasMouse(canvas,"OnMouseDown",new PointF(15,12),1);PointF pixel=(PointF)canvas.GetType().GetMethod("Map",BindingFlags.Instance|BindingFlags.NonPublic).Invoke(canvas,new object[]{new PointF(15,12)});
+                    Method(canvas,"OnMouseMove",new MouseEventArgs(MouseButtons.Left,0,(int)Math.Round(pixel.X)+28,(int)Math.Round(pixel.Y)-14,0));Method(canvas,"OnMouseUp",new MouseEventArgs(MouseButtons.Left,1,(int)Math.Round(pixel.X)+28,(int)Math.Round(pixel.Y)-14,0));
+                    Near(30,document.Items[2].X-document.Items[1].X);Near(0,document.Items[0].X);Assert(canvas.SelectedIndices.Count==3,"UI refresh discarded multi-selection");
+                    Method(form,"Undo",false);document=(LayoutDocument)Field(form,"document");Near(10,document.Items[1].X);Near(40,document.Items[2].X);
+                    Method(form,"SelectMany",new[]{0,1,2},1);Method(form,"Duplicate");document=(LayoutDocument)Field(form,"document");Assert(document.Items.Count==5&&canvas.SelectedIndices.Count==2,"Batch duplicate copied background or lost selection");
+                    Method(form,"Delete");Assert(document.Items.Count==3&&document.Items[0].Background,"Batch delete damaged template");Method(form,"Undo",false);Method(form,"Undo",false);
+                    document=(LayoutDocument)Field(form,"document");Method(form,"SelectMany",new[]{1,2},1);((CheckBox)Field(form,"markEnabled")).Checked=false;Assert(!document.Items[1].Enabled&&!document.Items[2].Enabled,"Batch machining flags not applied");Method(form,"Undo",false);form.Close();
+                }
+            });
+            Test("Alignment menu keeps selections, undo and multi-object machining order consistent", () =>
+            {
+                var document=new LayoutDocument{Items=new List<LayoutItem>{new LayoutItem{Kind=LayoutKind.Rectangle,Name="材料",ShapeWidth=120,ShapeHeight=70,Background=true},
+                    new LayoutItem{Kind=LayoutKind.Rectangle,Name="A",ShapeWidth=10,ShapeHeight=10,X=10,Y=10},new LayoutItem{Kind=LayoutKind.Rectangle,Name="B",ShapeWidth=20,ShapeHeight=10,X=30,Y=25},new LayoutItem{Kind=LayoutKind.Ellipse,Name="C",ShapeWidth=15,ShapeHeight=10,X=90,Y=15}}};
+                using(var form=new LayoutForm(core))
+                {
+                    SetField(form,"document",document);SetField(form,"saved",LayoutDocument.Serialize(document));Method(form,"RefreshScene",-1);form.Location=new Point(-2200,-2200);form.StartPosition=FormStartPosition.Manual;form.ShowInTaskbar=false;form.Show();Application.DoEvents();
+                    Method(form,"SelectMany",new[]{1,2,3},1);Assert(((ToolStripDropDownButton)Field(form,"alignButton")).Enabled,"Alignment menu disabled");
+                    Method(form,"Arrange",ArrangeMode.SpaceX);Method(form,"Arrange",ArrangeMode.CenterY);var canvas=(LayoutCanvas)Field(form,"canvas");Assert(canvas.SelectedIndices.Count==3,"Alignment lost multi-selection");
+                    using(var bitmap=new Bitmap(form.Width,form.Height)){canvas.Fit();form.DrawToBitmap(bitmap,new Rectangle(Point.Empty,form.Size));bitmap.Save(Path.Combine(artifacts,"layout-selection.png"));}
+                    File.WriteAllText(Path.Combine(artifacts,"selection-template.lgrbl-layout"),LayoutDocument.Serialize(document));
+                    Method(form,"Undo",false);Method(form,"Undo",false);document=(LayoutDocument)Field(form,"document");Near(30,document.Items[2].X);Near(25,document.Items[2].Y);
+                    Method(form,"SelectMany",new[]{1,2},1);Method(form,"Reorder",-1);Assert(document.Items[0].Name=="A"&&document.Items[1].Name=="B"&&document.Items[2].Background,"Selected order broken while moving up");
+                    Method(form,"Reorder",1);Assert(document.Items[0].Background&&document.Items[1].Name=="A"&&document.Items[2].Name=="B","Selected order broken while moving down");form.Close();
+                }
+            });
             core.Exiting();
         }
         Console.WriteLine("RESULT: "+passed+" passed, "+failed+" failed");
@@ -509,6 +592,7 @@ internal static class Program
         return failed==0 ? 0 : 1;
     }
 
+    private static void SetField(object value,string name,object field) { value.GetType().GetField(name,BindingFlags.Instance|BindingFlags.NonPublic).SetValue(value,field); }
     private static void Pump(Func<bool> complete)
     {
         var deadline=DateTime.UtcNow.AddSeconds(45);
