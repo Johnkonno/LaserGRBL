@@ -112,6 +112,51 @@ internal static class Program
             first.Begin(); Throws<IOException>(()=>second.Begin());
             Assert(SerialJournal.Open(file).Pending,"First reservation was overwritten");
         });
+        Test("Serial format substitutes only n runs and expands beyond minimum width", () =>
+        {
+            Assert(SerialJournal.Render("001A-nnnnn",1)=="001A-00001","Fixed prefix or padding changed");
+            Assert(SerialJournal.Render("001A-nnnnn",2)=="001A-00002","Next number incorrect");
+            Assert(SerialJournal.Render("B-nnn-2026-nn-Z",42)=="B-042-2026-42-Z","Repeated serial placeholders differ");
+            Assert(SerialJournal.Render("nn",123)=="123","Large numbers were truncated");
+            Assert(SerialJournal.Render("nnnnn",0)=="00000","Zero was not padded");
+            Assert(SerialJournal.Render("n",long.MaxValue)==long.MaxValue.ToString(CultureInfo.InvariantCulture),"Long number lost digits");
+        });
+        Test("Escaped n and backslashes remain literal", () =>
+        {
+            Assert(SerialJournal.Render(@"Pi\n-\\-nnn",7)==@"Pin-\-007","Escaped literals changed");
+        });
+        Test("Invalid serial formats fail before reservation", () =>
+        {
+            foreach(string pattern in new[]{"", "001A-", @"\n", @"nn\", new string('n',19), new string('A',256)+"n"})
+            {
+                Throws<ArgumentException>(()=>SerialJournal.Render(pattern,1));
+                var j=SerialJournal.Open(JournalFile());j.Pattern=pattern;
+                Throws<ArgumentException>(()=>j.Begin());Assert(!j.Pending,"Invalid format reserved a number");
+            }
+            Throws<ArgumentException>(()=>SerialJournal.Render("nn",-1));
+        });
+        Test("Serial formatting is independent of current culture", () =>
+        {
+            var previous=Thread.CurrentThread.CurrentCulture;
+            try{Thread.CurrentThread.CurrentCulture=CultureInfo.GetCultureInfo("ar-SA");
+                Assert(SerialJournal.Render("001A-nnnnn",123)=="001A-00123","Serial culture leak");}
+            finally{Thread.CurrentThread.CurrentCulture=previous;}
+        });
+        Test("Legacy serial records remain readable without a pattern field", () =>
+        {
+            string file=JournalFile();
+            File.WriteAllText(file,"{\"Next\":42,\"Increment\":2,\"Digits\":5,\"Prefix\":\"Pin-\",\"Suffix\":\"-A\",\"Revision\":0}");
+            var j=SerialJournal.Open(file);Assert(j.Pattern==null&&j.Format()=="Pin-00042-A","Legacy formatting changed");
+            j.Begin();j.Resolve(true);Assert(SerialJournal.Open(file).Format()=="Pin-00044-A","Legacy increment changed");
+        });
+        Test("Formatted reservations survive restart, retry and increment exactly once", () =>
+        {
+            string file=JournalFile();var j=SerialJournal.Open(file);j.Pattern="001A-nnnnn";j.Next=41;j.Increment=2;j.Begin();
+            j=SerialJournal.Open(file);Assert(j.PendingText=="001A-00041"&&j.Pattern=="001A-nnnnn","Format reservation was lost");
+            j.Resolve(false);Assert(j.Format()=="001A-00041","Retry consumed number");j.Begin();j.Resolve(true);
+            j=SerialJournal.Open(file);Assert(j.Format()=="001A-00043"&&!j.Pending,"Formatted number did not advance");
+            Throws<InvalidOperationException>(()=>j.Resolve(true));
+        });
         using (Control sync = new Control())
         {
             var handle = sync.Handle;
@@ -583,6 +628,54 @@ internal static class Program
                     Method(form,"Undo",false);Method(form,"Undo",false);document=(LayoutDocument)Field(form,"document");Near(30,document.Items[2].X);Near(25,document.Items[2].Y);
                     Method(form,"SelectMany",new[]{1,2},1);Method(form,"Reorder",-1);Assert(document.Items[0].Name=="A"&&document.Items[1].Name=="B"&&document.Items[2].Background,"Selected order broken while moving up");
                     Method(form,"Reorder",1);Assert(document.Items[0].Background&&document.Items[1].Name=="A"&&document.Items[2].Name=="B","Selected order broken while moving down");form.Close();
+                }
+            });
+            Test("Format validation blocks serial generation but allows fixed QR and SVG", () =>
+            {
+                using(var form=new MarkingForm(core))
+                {
+                    ((ComboBox)Field(form,"source")).SelectedIndex=1;
+                    ((CheckBox)Field(form,"formatMode")).Checked=true;
+                    ((TextBox)Field(form,"serialFormat")).Text="001A-";
+                    Assert(!((Button)Field(form,"generate")).Enabled,"Invalid format can be generated");
+                    Method(form,"Generate",null,EventArgs.Empty);Assert(!(bool)Field(form,"busy")&&Field(form,"prepared")==null,"Invalid format started generation");
+                    ((ComboBox)Field(form,"source")).SelectedIndex=2;
+                    Assert(((Button)Field(form,"generate")).Enabled,"Invalid unused format blocked fixed QR");
+                    ((ComboBox)Field(form,"source")).SelectedIndex=0;
+                    Assert(((Button)Field(form,"generate")).Enabled,"Invalid unused format blocked SVG");
+                    ((ComboBox)Field(form,"source")).SelectedIndex=1;
+                    ((CheckBox)Field(form,"formatMode")).Checked=false;
+                    Assert(((Button)Field(form,"generate")).Enabled,"Legacy mode retained format error");
+                }
+            });
+            Test("Whole layout uses one formatted serial for text and QR and advances after completion", () =>
+            {
+                var document=new LayoutDocument{Items=new List<LayoutItem>{
+                    new LayoutItem{Kind=LayoutKind.Text,Name="連番文字",Content="{serial}",Size=5,Mode=LayoutMode.Fill},
+                    new LayoutItem{Kind=LayoutKind.QR,Name="連番QR",Content="{serial}",X=50,Size=15,Mode=LayoutMode.Fill}}};
+                using(var form=new MarkingForm(core,document))
+                {
+                    form.Location=new Point(-2200,-2200);form.StartPosition=FormStartPosition.Manual;form.ShowInTaskbar=false;form.Show();
+                    ((CheckBox)Field(form,"formatMode")).Checked=true;
+                    ((TextBox)Field(form,"serialFormat")).Text="001A-nnnnn";
+                    ((NumericUpDown)Field(form,"next")).Value=1;
+                    ((NumericUpDown)Field(form,"increment")).Value=1;
+                    Assert(((TextBox)Field(form,"serialFormat")).Visible&&!((TextBox)Field(form,"prefix")).Visible,"Layout format rows are incorrect");
+                    Assert(((Label)Field(form,"serialDisplay")).Text=="001A-00001","Live preview did not update");
+                    Method(form,"Generate",null,EventArgs.Empty);Pump(()=>!(bool)Field(form,"busy"));
+                    object prepared=Field(form,"prepared");Assert(prepared!=null,((Label)Field(form,"status")).Text);
+                    string serial=(string)prepared.GetType().GetField("Text").GetValue(prepared);
+                    Assert(serial=="001A-00001","Generated serial differs from preview");
+                    var expected=document.Operations(serial).SelectMany(o=>o.Paths).SelectMany(p=>p.Points).ToArray();
+                    var actual=((List<MarkingPath>)prepared.GetType().GetField("Paths").GetValue(prepared)).SelectMany(p=>p.Points).ToArray();
+                    Assert(expected.SequenceEqual(actual),"Text and QR did not use the same formatted number");
+                    using(var bitmap=new Bitmap(form.Width,form.Height)){form.DrawToBitmap(bitmap,new Rectangle(Point.Empty,form.Size));bitmap.Save(Path.Combine(artifacts,"serial-format.png"));}
+                    var journal=(SerialJournal)Field(form,"journal");journal.Pattern="001A-nnnnn";journal.Next=1;journal.Increment=1;journal.Begin();
+                    SetField(form,"running",true);core.Arm();core.Feed("<Idle|MPos:0,0,0>");Application.DoEvents();
+                    Assert(journal.Next==2&&!journal.Pending&&((Label)Field(form,"serialDisplay")).Text=="001A-00002","Formatted UI failed to advance once");
+                    core.Feed("<Idle|MPos:0,0,0>");Application.DoEvents();Assert(journal.Next==2,"Duplicate completion consumed another number");
+                    Assert(SerialJournal.Open(Path.Combine(GrblCore.DataPath,"serial-number.json")).Format()=="001A-00002","Saved format lost");
+                    form.Close();
                 }
             });
             core.Exiting();
