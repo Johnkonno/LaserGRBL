@@ -217,7 +217,7 @@ internal static class Program
             });
             Test("Layout rejects unsupported versions, nonfinite positions, and empty fill", () =>
             {
-                Throws<ArgumentException>(()=>LayoutDocument.Deserialize("{\"Version\":2,\"Items\":[]}"));
+                Throws<ArgumentException>(()=>LayoutDocument.Deserialize("{\"Version\":99,\"Items\":[]}"));
                 var item=new LayoutItem {Kind=LayoutKind.Text,X=double.NaN}; Throws<ArgumentException>(()=>item.Validate());
                 item.X=0; item.Size=0; Throws<ArgumentException>(()=>item.Validate());
                 var open=new LayoutItem {Kind=LayoutKind.SVG,Mode=LayoutMode.Fill,Geometry=new List<LayoutPath>{new LayoutPath{Points=new List<LayoutPoint>{new LayoutPoint{X=0,Y=0},new LayoutPoint{X=10,Y=0}}}}};
@@ -347,6 +347,71 @@ internal static class Program
                 }
                 finally {var restore=DimensionCalibration.Open(DimensionCalibration.DefaultPath);restore.X=restore.Y=1;restore.Trial=null;restore.Save();}
             });
+            Test("Basic shapes keep editable physical dimensions and closed fillable outlines", () =>
+            {
+                var rectangle=new LayoutItem{Kind=LayoutKind.Rectangle,ShapeWidth=30,ShapeHeight=15};var bounds=rectangle.Bounds("");Near(30,bounds.Width);Near(15,bounds.Height);
+                Assert(rectangle.Outlines("").Single().Closed,"Rectangle is open");rectangle.ShapeWidth=40;Near(40,rectangle.Bounds("").Width);
+                rectangle.Mode=LayoutMode.Fill;Assert(rectangle.Operation("").Paths.Count>200,"Rectangle fill absent");
+                var ellipse=new LayoutItem{Kind=LayoutKind.Ellipse,ShapeWidth=20,ShapeHeight=10};bounds=ellipse.Bounds("");Near(20,bounds.Width);Near(10,bounds.Height);Assert(ellipse.Outlines("").Single().Closed,"Ellipse is open");
+                var polygon=new LayoutItem{Kind=LayoutKind.RegularPolygon,ShapeWidth=20,Sides=5};var points=polygon.Outlines("").Single().Points;
+                Assert(points.Count==5,"Polygon side count wrong");double edge=Math.Sqrt(Math.Pow(points[1].X-points[0].X,2)+Math.Pow(points[1].Y-points[0].Y,2));
+                for(int i=0;i<5;i++)Near(edge,Math.Sqrt(Math.Pow(points[(i+1)%5].X-points[i].X,2)+Math.Pow(points[(i+1)%5].Y-points[i].Y,2)));
+                polygon.Sides=2;Throws<ArgumentException>(()=>polygon.Validate());
+            });
+            Test("Three-point arcs pass through the selected side and reject collinear points", () =>
+            {
+                var arc=LayoutDrawing.Arc(new PointF(-10,0),new PointF(0,10),new PointF(10,0));Near(-10,arc[0].X);Near(10,arc[arc.Count-1].X);Near(10,arc.Max(p=>p.Y));Assert(arc.All(p=>p.Y>=-0.001),"Arc uses wrong side");
+                var lower=LayoutDrawing.Arc(new PointF(-10,0),new PointF(0,-10),new PointF(10,0));Near(-10,lower.Min(p=>p.Y));
+                Throws<ArgumentException>(()=>LayoutDrawing.Arc(new PointF(0,0),new PointF(1,1),new PointF(2,2)));
+            });
+            Test("Background excludes engraving and serial reservations while preserving the original enable flag", () =>
+            {
+                var bg=new LayoutItem{Kind=LayoutKind.Text,Content="{serial}",Background=true,Enabled=true};var front=new LayoutItem{Kind=LayoutKind.Rectangle,ShapeWidth=10,ShapeHeight=10};
+                var document=new LayoutDocument{Items=new List<LayoutItem>{bg,front}};Assert(!document.UsesSerial&&document.Operations("000001").Count==1,"Background enters machining/serial flow");Throws<InvalidOperationException>(()=>bg.Operation("000001"));
+                string json=LayoutDocument.Serialize(document);Assert(json.Contains("\"Version\":2"),"Background layout can be silently processed by an older version");
+                var restored=LayoutDocument.Deserialize(json);Assert(restored.Items[0].Background&&restored.Items[0].Enabled,"Background state lost");Near(10,restored.Items[1].ShapeWidth);
+                var legacy=LayoutDocument.Deserialize("{\"Version\":1,\"Items\":[]}");Assert(legacy.Version==2,"Older layout not upgraded");
+                bg.Background=false;Assert(document.UsesSerial&&bg.CanMark,"Unlock lost previous machining flag");bg.Background=true;front.Enabled=false;Throws<ArgumentException>(()=>document.Operations("000001"));
+            });
+            Test("Canvas gestures create every standard drawing tool and support cancellation", () =>
+            {
+                using(var canvas=new LayoutCanvas{Width=800,Height=600,Document=new LayoutDocument()})
+                {
+                    var created=new List<LayoutItem>();canvas.ShapeCreated+=item=>{created.Add(item);canvas.Document.Items.Add(item);canvas.Rebuild();};
+                    Action<DrawingTool,PointF,PointF> drag=(tool,a,b)=>{canvas.SetTool(tool);CanvasMouse(canvas,"OnMouseDown",a,1);CanvasMouse(canvas,"OnMouseMove",b,0);CanvasMouse(canvas,"OnMouseUp",b,1);};
+                    drag(DrawingTool.Rectangle,new PointF(10,10),new PointF(30,20));Near(20,created.Last().ShapeWidth);Near(10,created.Last().ShapeHeight);
+                    drag(DrawingTool.Circle,new PointF(50,20),new PointF(60,20));Near(20,created.Last().ShapeWidth);Near(created.Last().ShapeWidth,created.Last().ShapeHeight);
+                    drag(DrawingTool.Ellipse,new PointF(80,10),new PointF(110,25));Near(30,created.Last().ShapeWidth);Near(15,created.Last().ShapeHeight);
+                    drag(DrawingTool.Line,new PointF(10,40),new PointF(30,50));Assert(!created.Last().Outlines("")[0].Closed,"Line is closed");
+                    drag(DrawingTool.RegularPolygon,new PointF(90,50),new PointF(100,50));Assert(created.Last().Kind==LayoutKind.RegularPolygon,"Regular polygon absent");
+                    canvas.SetTool(DrawingTool.Polygon);CanvasMouse(canvas,"OnMouseDown",new PointF(40,70),1);CanvasMouse(canvas,"OnMouseDown",new PointF(60,70),1);CanvasMouse(canvas,"OnMouseDown",new PointF(60,90),2);Assert(created.Last().Outlines("")[0].Closed,"Polygon is open");
+                    canvas.SetTool(DrawingTool.Polyline);CanvasMouse(canvas,"OnMouseDown",new PointF(10,100),1);CanvasMouse(canvas,"OnMouseDown",new PointF(20,110),1);CanvasMouse(canvas,"OnMouseDown",new PointF(30,100),1);Method(canvas,"OnKeyDown",new KeyEventArgs(Keys.Enter));Assert(created.Last().Geometry[0].Points.Count==3&&!created.Last().Geometry[0].Closed,"Polyline wrong");
+                    canvas.SetTool(DrawingTool.Arc);CanvasMouse(canvas,"OnMouseDown",new PointF(80,80),1);CanvasMouse(canvas,"OnMouseDown",new PointF(90,90),1);CanvasMouse(canvas,"OnMouseDown",new PointF(100,80),1);Near(90,created.Last().Bounds("").Bottom);
+                    canvas.SetTool(DrawingTool.Freehand);CanvasMouse(canvas,"OnMouseDown",new PointF(10,80),1);CanvasMouse(canvas,"OnMouseMove",new PointF(20,85),0);CanvasMouse(canvas,"OnMouseMove",new PointF(30,80),0);CanvasMouse(canvas,"OnMouseUp",new PointF(40,85),1);Assert(created.Last().Geometry[0].Points.Count==4,"Freehand samples absent");
+                    Assert(created.Count==9,"Drawing tool missing");canvas.SetTool(DrawingTool.Polyline);CanvasMouse(canvas,"OnMouseDown",new PointF(0,0),1);Method(canvas,"OnKeyDown",new KeyEventArgs(Keys.Escape));Assert(canvas.Tool==DrawingTool.Select&&created.Count==9,"Cancelled draft created an object");
+                    canvas.SetTool(DrawingTool.Polygon);CanvasMouse(canvas,"OnMouseDown",new PointF(0,0),1);CanvasMouse(canvas,"OnMouseDown",new PointF(1,1),1);Method(canvas,"OnKeyDown",new KeyEventArgs(Keys.Back));Method(canvas,"OnKeyDown",new KeyEventArgs(Keys.Enter));Assert(created.Count==9,"Unfinished polygon created");
+                }
+            });
+            Test("Object checkboxes lock mouse and numeric edits, keep foreground selectable and undo correctly", () =>
+            {
+                var front=new LayoutItem{Kind=LayoutKind.Rectangle,Name="加工用矩形",ShapeWidth=30,ShapeHeight=15,X=20,Y=20};
+                var bg=new LayoutItem{Kind=LayoutKind.Rectangle,Name="材料テンプレート",ShapeWidth=100,ShapeHeight=60,Background=true};
+                var document=new LayoutDocument{Items=new List<LayoutItem>{front,bg}};
+                using(var form=new LayoutForm(core))
+                {
+                    typeof(LayoutForm).GetField("document",BindingFlags.Instance|BindingFlags.NonPublic).SetValue(form,document);typeof(LayoutForm).GetField("saved",BindingFlags.Instance|BindingFlags.NonPublic).SetValue(form,LayoutDocument.Serialize(document));Method(form,"RefreshScene",1);
+                    form.Location=new Point(-2000,-2000);form.StartPosition=FormStartPosition.Manual;form.ShowInTaskbar=false;form.Show();Application.DoEvents();var canvas=(LayoutCanvas)Field(form,"canvas");canvas.Fit();
+                    Assert(!((PropertyGrid)Field(form,"properties")).Enabled&&!((CheckBox)Field(form,"markEnabled")).Enabled&&((CheckBox)Field(form,"background")).Checked,"Fixed properties editable");
+                    CanvasMouse(canvas,"OnMouseDown",new PointF(5,5),1);CanvasMouse(canvas,"OnMouseMove",new PointF(15,15),0);CanvasMouse(canvas,"OnMouseUp",new PointF(15,15),1);Near(0,bg.X);Near(0,bg.Y);
+                    CanvasMouse(canvas,"OnMouseDown",new PointF(100,60),1);CanvasMouse(canvas,"OnMouseMove",new PointF(120,80),0);CanvasMouse(canvas,"OnMouseUp",new PointF(120,80),1);Near(1,bg.Scale);
+                    CanvasMouse(canvas,"OnMouseDown",new PointF(30,25),1);CanvasMouse(canvas,"OnMouseUp",new PointF(30,25),1);Assert(canvas.SelectedIndex==0,"Background blocks foreground selection");
+                    var enabled=(CheckBox)Field(form,"markEnabled");enabled.Checked=false;Assert(!front.Enabled,"OFF checkbox failed");Throws<ArgumentException>(()=>document.Operations(""));
+                    Method(form,"Undo",false);document=(LayoutDocument)Field(form,"document");Assert(document.Items[0].Enabled,"Checkbox undo failed");Method(form,"Select",1);((CheckBox)Field(form,"background")).Checked=false;Assert(((PropertyGrid)Field(form,"properties")).Enabled&&document.Items[1].CanMark,"Unlock did not restore edits/machining");Method(form,"Undo",false);
+                    document=(LayoutDocument)Field(form,"document");Method(form,"Select",1);
+                    using(var bitmap=new Bitmap(form.Width,form.Height)){form.DrawToBitmap(bitmap,new Rectangle(Point.Empty,form.Size));bitmap.Save(Path.Combine(artifacts,"layout-drawing.png"));}
+                    File.WriteAllText(Path.Combine(artifacts,"drawing-template.lgrbl-layout"),LayoutDocument.Serialize(document));form.Close();
+                }
+            });
             core.Exiting();
         }
         Console.WriteLine("RESULT: "+passed+" passed, "+failed+" failed");
@@ -354,8 +419,13 @@ internal static class Program
         return failed==0 ? 0 : 1;
     }
 
+    private static void CanvasMouse(LayoutCanvas canvas,string method,PointF position,int clicks)
+    {
+        PointF pixel=(PointF)canvas.GetType().GetMethod("Map",BindingFlags.Instance|BindingFlags.NonPublic).Invoke(canvas,new object[]{position});
+        Method(canvas,method,new MouseEventArgs(MouseButtons.Left,clicks,(int)Math.Round(pixel.X),(int)Math.Round(pixel.Y),0));
+    }
     private static object Field(object value,string name) { return value.GetType().GetField(name,BindingFlags.Instance|BindingFlags.NonPublic).GetValue(value); }
-    private static void Method(object value,string name,params object[] args) { value.GetType().GetMethod(name,BindingFlags.Instance|BindingFlags.NonPublic).Invoke(value,args); }
+    private static void Method(object value,string name,params object[] args) { value.GetType().GetMethods(BindingFlags.Instance|BindingFlags.NonPublic).Single(m=>m.Name==name && m.GetParameters().Length==args.Length && m.GetParameters().Select((p,i)=>args[i]==null||p.ParameterType.IsInstanceOfType(args[i])).All(ok=>ok)).Invoke(value,args); }
     private static void Test(string name,Action action) { try { action(); passed++; Console.WriteLine("PASS "+name); } catch(Exception ex) { failed++; Console.WriteLine("FAIL "+name+": "+ex); } }
     private static void Assert(bool condition,string message) { if(!condition)throw new Exception(message); }
     private static void Near(double expected,double actual) { Assert(Math.Abs(expected-actual)<0.02,"Expected "+expected+", actual "+actual); }

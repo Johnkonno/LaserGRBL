@@ -12,7 +12,7 @@ using System.Xml.Linq;
 
 namespace LaserGRBL.Marking
 {
-    internal enum LayoutKind { SVG, Text, QR }
+    internal enum LayoutKind { SVG, Text, QR, Rectangle, Ellipse, RegularPolygon, Path }
     internal enum LayoutMode { Trace, Offset, Zigzag, Fill }
 
     [DataContract]
@@ -49,8 +49,14 @@ namespace LaserGRBL.Marking
         public double Scale { get; set; }
         [DataMember, Category("2. 配置"), DisplayName("回転 °"), Description("配置原点を中心に反時計回り。")]
         public double Rotation { get; set; }
-        [DataMember, Category("3. 加工"), DisplayName("加工する")]
+        [DataMember, Browsable(false)]
         public bool Enabled { get; set; }
+        [DataMember, Browsable(false)] public bool Background { get; set; }
+        [DataMember, Category("1. 内容"), DisplayName("幅／外接円直径 mm")] public double ShapeWidth { get; set; }
+        [DataMember, Category("1. 内容"), DisplayName("図形の高さ mm")] public double ShapeHeight { get; set; }
+        [DataMember, Category("1. 内容"), DisplayName("正多角形の辺数")] public int Sides { get; set; }
+        [Browsable(false)] public bool CanMark { get { return Enabled && !Background; } }
+        [Browsable(false)] public bool HasGeometry { get { return Kind == LayoutKind.SVG || Kind == LayoutKind.Path; } }
         [DataMember, Category("3. 加工"), DisplayName("加工方式"), Description("Trace: 輪郭、Offset: 重ね、Zigzag: 太線ジグザグ、Fill: 閉じた図形の塗りつぶし。")]
         public LayoutMode Mode { get; set; }
         [DataMember, Category("3. 加工"), DisplayName("軌道幅 mm")]
@@ -66,15 +72,15 @@ namespace LaserGRBL.Marking
         [DataMember, Category("3. 加工"), DisplayName("M3／M4")]
         public string LaserMode { get; set; }
         [DataMember, Browsable(false)] public List<LayoutPath> Geometry { get; set; }
-        [Browsable(false)] public bool UsesSerial { get { return Kind != LayoutKind.SVG && Content != null && Content.Contains("{serial}"); } }
+        [Browsable(false)] public bool UsesSerial { get { return (Kind == LayoutKind.Text || Kind == LayoutKind.QR) && Content != null && Content.Contains("{serial}"); } }
 
         public LayoutItem()
         {
             Name = "オブジェクト"; Content = "TEXT"; FontName = "Arial"; Size = 5;
-            Scale = 1; Enabled = true; Width = 0.5; Spacing = 0.05; Pitch = 0.2;
+            Scale = 1; Enabled = true; ShapeWidth = ShapeHeight = 20; Sides = 6; Width = 0.5; Spacing = 0.05; Pitch = 0.2;
             Speed = 1000; Power = 255; LaserMode = "M3"; Geometry = new List<LayoutPath>();
         }
-        public override string ToString() { return (Enabled ? "" : "[OFF] ") + Name; }
+        public override string ToString() { return (Background ? "[背景・固定] " : Enabled ? "" : "[OFF] ") + Name; }
         public void Validate()
         {
             if (!Enum.IsDefined(typeof(LayoutKind), Kind) || !Enum.IsDefined(typeof(LayoutMode), Mode)) throw new ArgumentException("オブジェクトの種類／方式が不正です。");
@@ -83,14 +89,19 @@ namespace LaserGRBL.Marking
             Range(Spacing, 0.001, 100); Range(Pitch, 0.001, 100); Range(Speed, 1, 100000); Range(Power, 1, 100000);
             if (LaserMode != "M3" && LaserMode != "M4") throw new ArgumentException("M3またはM4を指定してください。");
             if (string.IsNullOrWhiteSpace(Name) || Name.Length > 200 || Content == null || Content.Length > 10000 || string.IsNullOrWhiteSpace(FontName)) throw new ArgumentException("名前・内容・フォントを確認してください。");
-            if (Kind == LayoutKind.SVG)
+            if (Kind == LayoutKind.Rectangle || Kind == LayoutKind.Ellipse || Kind == LayoutKind.RegularPolygon)
+            {
+                Range(ShapeWidth, 0.01, 10000); Range(ShapeHeight, 0.01, 10000);
+                if (Kind == LayoutKind.RegularPolygon && (Sides < 3 || Sides > 100)) throw new ArgumentException("正多角形の辺数は3〜100です。");
+            }
+            if (HasGeometry)
             {
                 if (Geometry == null || Geometry.Count == 0 || Geometry.Any(p => p == null || p.Points == null || p.Points.Count < 2) || Geometry.Sum(p => (long)p.Points.Count) > 500000)
                     throw new ArgumentException("SVGのパスが不正または多すぎます。");
                 foreach (LayoutPoint p in Geometry.SelectMany(g => g.Points))
                 { if (p == null) throw new ArgumentException("SVGの座標がありません。"); Range(p.X, -100000, 100000); Range(p.Y, -100000, 100000); }
             }
-            else if (string.IsNullOrWhiteSpace(Content)) throw new ArgumentException("文字／QRの内容を入力してください。");
+            else if ((Kind == LayoutKind.Text || Kind == LayoutKind.QR) && string.IsNullOrWhiteSpace(Content)) throw new ArgumentException("文字／QRの内容を入力してください。");
         }
         internal static void Range(double value, double min, double max)
         { if (double.IsNaN(value) || double.IsInfinity(value) || value < min || value > max) throw new ArgumentException("数値が範囲外です（" + min + "〜" + max + "）。"); }
@@ -99,8 +110,8 @@ namespace LaserGRBL.Marking
         {
             Validate();
             string text = Content.Replace("{serial}", serial);
-            List<MarkingPath> paths = Kind == LayoutKind.SVG ? Geometry.Select(p => new MarkingPath(p.Points.Select(q => new PointF(q.X, q.Y)), p.Closed)).ToList() :
-                Kind == LayoutKind.QR ? MarkingGeometry.Qr(text, Size) : MarkingGeometry.Text(text, FontName, Size);
+            List<MarkingPath> paths = HasGeometry ? Geometry.Select(p => new MarkingPath(p.Points.Select(q => new PointF(q.X, q.Y)), p.Closed)).ToList() :
+                Kind == LayoutKind.QR ? MarkingGeometry.Qr(text, Size) : Kind == LayoutKind.Text ? MarkingGeometry.Text(text, FontName, Size) : LayoutDrawing.Shape(Kind, ShapeWidth, ShapeHeight, Sides);
             return Transform(paths, true);
         }
         private List<MarkingPath> Transform(List<MarkingPath> paths, bool scale)
@@ -117,6 +128,7 @@ namespace LaserGRBL.Marking
         }
         public MarkingOperation Operation(string serial)
         {
+            if (!CanMark) throw new InvalidOperationException("背景または加工OFFのオブジェクトは加工できません。");
             Validate();
             // Generate hatching in object coordinates; rotate/translate the completed paths afterwards.
             LayoutItem local = Copy(); local.X = local.Y = local.Rotation = 0;
@@ -151,24 +163,24 @@ namespace LaserGRBL.Marking
     [DataContract]
     internal sealed class LayoutDocument
     {
-        [DataMember] public int Version = 1;
+        [DataMember] public int Version = 2;
         [DataMember] public List<LayoutItem> Items = new List<LayoutItem>();
         [DataMember] public double OriginX, OriginY, RetreatX, RetreatY;
         [DataMember] public bool Retreat;
-        public bool UsesSerial { get { return Items.Any(i => i.Enabled && i.UsesSerial); } }
+        public bool UsesSerial { get { return Items.Any(i => i.CanMark && i.UsesSerial); } }
         public void Validate()
         {
-            if (Version != 1 || Items == null || Items.Count > 200 || Items.Any(i => i == null)) throw new ArgumentException("対応していないレイアウト形式です。");
+            if ((Version != 1 && Version != 2) || Items == null || Items.Count > 200 || Items.Any(i => i == null)) throw new ArgumentException("対応していないレイアウト形式です。");
             LayoutItem.Range(OriginX, -10000, 10000); LayoutItem.Range(OriginY, -10000, 10000);
             LayoutItem.Range(RetreatX, 0, 1000); LayoutItem.Range(RetreatY, 0, 1000);
             foreach (LayoutItem item in Items) item.Validate();
-            if (Items.Where(i => i.Kind == LayoutKind.SVG).Sum(i => i.Geometry.Sum(p => (long)p.Points.Count)) > 500000) throw new ArgumentException("SVGの総座標数が多すぎます。");
+            if (Items.Where(i => i.HasGeometry).Sum(i => i.Geometry.Sum(p => (long)p.Points.Count)) > 500000) throw new ArgumentException("SVGの総座標数が多すぎます。");
         }
         public List<MarkingOperation> Operations(string serial)
         {
             Validate();
             var operations = new List<MarkingOperation>(); long points = 0;
-            foreach (LayoutItem item in Items.Where(i => i.Enabled))
+            foreach (LayoutItem item in Items.Where(i => i.CanMark))
             {
                 MarkingOperation operation = item.Operation(serial); points += operation.Paths.Sum(p => (long)p.Points.Count);
                 if (points > 500000) throw new ArgumentException("全体の軌道が多すぎます。間隔を広げてください。");
@@ -186,7 +198,7 @@ namespace LaserGRBL.Marking
         {
             if (json == null || json.Length > 32000000) throw new ArgumentException("レイアウトファイルが大きすぎます。");
             using (MemoryStream stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json)))
-            { LayoutDocument result = (LayoutDocument)new DataContractJsonSerializer(typeof(LayoutDocument)).ReadObject(stream); if (result == null) throw new ArgumentException("レイアウトがありません。"); result.Validate(); return result; }
+            { LayoutDocument result = (LayoutDocument)new DataContractJsonSerializer(typeof(LayoutDocument)).ReadObject(stream); if (result == null) throw new ArgumentException("レイアウトがありません。"); result.Validate(); result.Version = 2; return result; }
         }
     }
 }
