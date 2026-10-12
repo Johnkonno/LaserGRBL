@@ -20,6 +20,7 @@ namespace LaserGRBL.Marking
         private readonly CheckBox background = new CheckBox { Text="背景／テンプレート（加工しない・固定）", AutoSize=true };
         private readonly Label status = new Label { Dock = DockStyle.Bottom, Height = 46, Padding = new Padding(8) };
         private readonly Stack<string> undo = new Stack<string>(), redo = new Stack<string>();
+        private ToolStripButton undoButton, redoButton, copyButton, deleteButton, upButton, downButton;
         private string snapshot, saved, filename;
         private bool refreshing;
 
@@ -28,16 +29,20 @@ namespace LaserGRBL.Marking
             this.core = core;
             Text = "LaserGRBL Marking — レイアウト"; Size = new Size(1180, 800); MinimumSize = new Size(950, 640);
             StartPosition = FormStartPosition.CenterParent; AutoScaleMode = AutoScaleMode.Dpi; KeyPreview = true;
-            ToolStrip tools = new ToolStrip { Dock = DockStyle.Top, GripStyle = ToolStripGripStyle.Hidden };
+            ToolStrip tools = LayoutToolbar.Strip(DockStyle.Top);
             AddTool(tools, "新規", () => { if (ConfirmSave()) { document = new LayoutDocument(); filename = null; undo.Clear(); redo.Clear(); saved = LayoutDocument.Serialize(document); RefreshScene(-1); } });
             AddTool(tools, "開く", Open); AddTool(tools, "保存", () => Save(false)); AddTool(tools, "別名保存", () => Save(true));
+            tools.Items.Add(new ToolStripSeparator());
+            undoButton=AddTool(tools,"元に戻す",()=>Undo(false));redoButton=AddTool(tools,"やり直し",()=>Undo(true));
+            undoButton.ToolTipText="元に戻す (Ctrl+Z)";redoButton.ToolTipText="やり直し (Ctrl+Y)";
             tools.Items.Add(new ToolStripSeparator());
             AddTool(tools, "画像トレース", ImportBitmap); AddTool(tools, "SVG追加", ImportSvg); AddTool(tools, "文字", () => AddItem(LayoutKind.Text, "TEXT"));
             AddTool(tools, "QR", () => AddItem(LayoutKind.QR, "https://example.com"));
             AddTool(tools, "連番文字", () => AddItem(LayoutKind.Text, "{serial}")); AddTool(tools, "連番QR", () => AddItem(LayoutKind.QR, "{serial}"));
             tools.Items.Add(new ToolStripSeparator()); AddTool(tools, "全体表示", () => canvas.Fit());
             AddTool(tools, "定規・寸法補正", () => { using (CalibrationForm form = new CalibrationForm(core)) form.ShowDialog(this); });
-            AddTool(tools, "Gコード生成 →", Generate);
+            ToolStripButton generateButton=AddTool(tools,"Gコード生成 →",Generate);
+            generateButton.DisplayStyle=ToolStripItemDisplayStyle.ImageAndText;generateButton.Text="Gコード生成";generateButton.Size=new Size(128,40);generateButton.Alignment=ToolStripItemAlignment.Right;
             SplitContainer split = new SplitContainer { Dock = DockStyle.Fill, FixedPanel = FixedPanel.Panel2 };
             split.Panel1.Controls.Add(canvas);
             SplitContainer sidebar = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal };
@@ -47,22 +52,23 @@ namespace LaserGRBL.Marking
             markEnabled.CheckedChanged += (s,e) => ToggleFlag(false); background.CheckedChanged += (s,e) => ToggleFlag(true);
             Label order = new Label { Dock = DockStyle.Top, Height = 27, Text = "オブジェクト（上から加工する順序）", Padding = new Padding(4) };
             sidebar.Panel1.Controls.Add(order);
-            FlowLayoutPanel actions = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 34 };
-            Button copy = new Button { Text = "複製", Width = 58 }, delete = new Button { Text = "削除", Width = 58 }, up = new Button { Text = "↑", Width = 38 }, down = new Button { Text = "↓", Width = 38 };
-            copy.Click += (s, e) => Safely(Duplicate); delete.Click += (s, e) => Safely(Delete); up.Click += (s, e) => Safely(() => Reorder(-1)); down.Click += (s, e) => Safely(() => Reorder(1));
-            actions.Controls.AddRange(new Control[] { copy, delete, up, down }); sidebar.Panel1.Controls.Add(actions);
+            ToolStrip actions=LayoutToolbar.Strip(DockStyle.Bottom);
+            copyButton=AddTool(actions,"複製",Duplicate);deleteButton=AddTool(actions,"削除",Delete);
+            actions.Items.Add(new ToolStripSeparator());upButton=AddTool(actions,"加工順を上へ",()=>Reorder(-1));downButton=AddTool(actions,"加工順を下へ",()=>Reorder(1));
+            sidebar.Panel1.Controls.Add(actions);
             Controls.Add(split); Controls.Add(status);
-            ToolStrip drawingTools = new ToolStrip { Dock=DockStyle.Top,GripStyle=ToolStripGripStyle.Hidden };
+            ToolStrip drawingTools=LayoutToolbar.Strip(DockStyle.Left);drawingTools.AutoSize=false;drawingTools.Width=52;drawingTools.CanOverflow=false;drawingTools.LayoutStyle=ToolStripLayoutStyle.VerticalStackWithOverflow;
             Dictionary<DrawingTool,ToolStripButton> toolButtons = new Dictionary<DrawingTool,ToolStripButton>();
             string[] toolNames = { "選択", "線", "矩形", "円", "楕円", "折れ線", "多角形", "正多角形", "円弧", "フリーハンド" };
             foreach (DrawingTool tool in Enum.GetValues(typeof(DrawingTool)))
             {
-                DrawingTool selectedTool=tool; ToolStripButton button=new ToolStripButton(toolNames[(int)tool]);
+                DrawingTool selectedTool=tool; ToolStripButton button=LayoutToolbar.Drawing(tool,toolNames[(int)tool]);
+                if(tool==DrawingTool.Line) drawingTools.Items.Add(new ToolStripSeparator());
                 button.Click += (s,e) => canvas.SetTool(selectedTool); drawingTools.Items.Add(button); toolButtons.Add(tool,button);
             }
             canvas.ToolChanged += tool => { foreach (var pair in toolButtons) pair.Value.Checked=pair.Key==tool; status.Text=canvas.ToolTip; };
             canvas.ShapeCreated += item => Safely(() => Add(item,true,false)); canvas.DrawingError += message => status.Text=message;
-            Controls.Add(drawingTools); Controls.Add(tools); canvas.SetTool(DrawingTool.Select);
+            split.Panel1.Controls.Add(drawingTools); Controls.Add(tools); canvas.SetTool(DrawingTool.Select);
             split.SplitterDistance = 790; sidebar.SplitterDistance = 190;
             objects.SelectedIndexChanged += (s, e) => { if (!refreshing) Select(objects.SelectedIndex); };
             canvas.SelectionChanged += index => { Select(index); };
@@ -77,8 +83,8 @@ namespace LaserGRBL.Marking
             FormClosing += (s, e) => { if (!ConfirmSave()) e.Cancel = true; };
             saved = LayoutDocument.Serialize(document); RefreshScene(-1);
         }
-        private void AddTool(ToolStrip strip, string text, Action action)
-        { ToolStripButton button = new ToolStripButton(text); button.Click += (s, e) => { try { action(); } catch (Exception ex) { Error(ex); } }; strip.Items.Add(button); }
+        private ToolStripButton AddTool(ToolStrip strip, string text, Action action)
+        { ToolStripButton button=LayoutToolbar.Command(text);button.Click+=(s,e)=>Safely(action);strip.Items.Add(button);return button; }
         private void Safely(Action action) { try { action(); } catch (Exception ex) { Error(ex); } }
         private void Error(Exception ex) { MessageBox.Show(this, ex.Message, "レイアウト", MessageBoxButtons.OK, MessageBoxIcon.Error); }
         private void Commit(string before)
@@ -113,6 +119,9 @@ namespace LaserGRBL.Marking
             properties.SelectedObject = item==null?null:new LayoutPropertyView(item); properties.Enabled=item!=null&&!item.Background;
             background.Enabled=item!=null; background.Checked=item!=null&&item.Background;
             markEnabled.Enabled=item!=null&&!item.Background; markEnabled.Checked=item!=null&&item.CanMark;
+            copyButton.Enabled=deleteButton.Enabled=item!=null&&!item.Background;
+            upButton.Enabled=index>0;downButton.Enabled=index>=0&&index<document.Items.Count-1;
+            undoButton.Enabled=undo.Count>0;redoButton.Enabled=redo.Count>0;
             refreshing = prior; canvas.Invalidate();
         }
         private void ToggleFlag(bool isBackground)
